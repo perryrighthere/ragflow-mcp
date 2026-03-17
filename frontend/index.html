@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RAGFlow Metadata Console</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">RAGFlow Service Console</p>
+          <h1>文档上传、Metadata、检索验证面板</h1>
+          <p class="hero-copy">
+            这个页面直接调用当前服务的 HTTP 接口，用来展示上传文档、更新 metadata、
+            按 metadata 过滤检索和文档列表查询。
+          </p>
+        </div>
+        <div class="hero-status">
+          <button id="health-check" class="button secondary" type="button">检查后端状态</button>
+          <div class="status-card">
+            <span class="status-label">Health</span>
+            <strong id="health-indicator">未检查</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="content-grid">
+        <div class="panel-stack">
+          <article class="panel">
+            <div class="panel-head">
+              <h2>运行配置</h2>
+              <p>从页面读取和保存当前服务配置。RAGFlow 相关配置会立即应用；`SERVICE_HOST` 和 `SERVICE_PORT` 写入 `.env` 后需要重启服务。</p>
+            </div>
+            <form id="settings-form" class="form-grid">
+              <label>
+                <span>RAGFLOW_BASE_URL</span>
+                <input name="ragflow_base_url" required placeholder="http://127.0.0.1:9380" />
+              </label>
+              <label>
+                <span>RAGFLOW_API_KEY</span>
+                <input
+                  name="ragflow_api_key"
+                  type="password"
+                  placeholder="留空表示保留当前值"
+                  autocomplete="off"
+                />
+              </label>
+              <label>
+                <span>RAGFLOW_TIMEOUT</span>
+                <input name="request_timeout" type="number" min="1" step="1" placeholder="60" />
+              </label>
+              <label>
+                <span>SERVICE_HOST</span>
+                <input name="server_host" placeholder="0.0.0.0" />
+              </label>
+              <label>
+                <span>SERVICE_PORT</span>
+                <input name="server_port" type="number" min="1" step="1" placeholder="8080" />
+              </label>
+              <label>
+                <span>当前 API Key</span>
+                <input name="masked_api_key" readonly placeholder="尚未读取" />
+              </label>
+              <div class="actions wide split-actions">
+                <button id="load-settings" class="button secondary" type="button">读取当前配置</button>
+                <button class="button" type="submit">保存并应用</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <h2>上传文档并写入 Metadata</h2>
+              <p>上传后由服务层调用文档更新接口补写 `meta_fields`，可选自动解析。</p>
+            </div>
+            <form id="upload-form" class="form-grid">
+              <label>
+                <span>Dataset ID</span>
+                <input name="dataset_id" required placeholder="kb_123" />
+              </label>
+              <label class="wide">
+                <span>文件</span>
+                <input name="files" type="file" multiple required />
+              </label>
+              <label class="wide">
+                <span>shared_meta_fields JSON</span>
+                <textarea
+                  name="shared_meta_fields"
+                  rows="4"
+                  placeholder='{"tenant":"acme","project":"rag"}'
+                ></textarea>
+              </label>
+              <label class="wide">
+                <span>per_file_meta_fields JSON</span>
+                <textarea
+                  name="per_file_meta_fields"
+                  rows="4"
+                  placeholder='{"contract.pdf":{"department":"legal"}}'
+                ></textarea>
+              </label>
+              <label>
+                <span>enabled</span>
+                <select name="enabled">
+                  <option value="">默认</option>
+                  <option value="1">1</option>
+                  <option value="0">0</option>
+                </select>
+              </label>
+              <label>
+                <span>chunk_method</span>
+                <input name="chunk_method" placeholder="naive" />
+              </label>
+              <label class="wide">
+                <span>parser_config JSON</span>
+                <textarea
+                  name="parser_config"
+                  rows="4"
+                  placeholder='{"chunk_token_num":256,"delimiter":"\n"}'
+                ></textarea>
+              </label>
+              <label class="toggle">
+                <input name="parse_after_upload" type="checkbox" checked />
+                <span>上传后立即触发解析</span>
+              </label>
+              <div class="actions wide">
+                <button class="button" type="submit">上传并验证</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <h2>更新单个文档 Metadata</h2>
+              <p>直接调用单文档 metadata 更新接口。</p>
+            </div>
+            <form id="single-metadata-form" class="form-grid">
+              <label>
+                <span>Dataset ID</span>
+                <input name="dataset_id" required placeholder="kb_123" />
+              </label>
+              <label>
+                <span>Document ID</span>
+                <input name="document_id" required placeholder="doc_456" />
+              </label>
+              <label class="wide">
+                <span>meta_fields JSON</span>
+                <textarea
+                  name="meta_fields"
+                  rows="5"
+                  required
+                  placeholder='{"tenant":"acme","department":"finance"}'
+                ></textarea>
+              </label>
+              <label>
+                <span>enabled</span>
+                <select name="enabled">
+                  <option value="">默认</option>
+                  <option value="1">1</option>
+                  <option value="0">0</option>
+                </select>
+              </label>
+              <label>
+                <span>name</span>
+                <input name="name" placeholder="manual.txt" />
+              </label>
+              <label>
+                <span>chunk_method</span>
+                <input name="chunk_method" placeholder="naive" />
+              </label>
+              <label class="wide">
+                <span>parser_config JSON</span>
+                <textarea name="parser_config" rows="4" placeholder='{"chunk_token_num":256}'></textarea>
+              </label>
+              <div class="actions wide">
+                <button class="button" type="submit">更新 Metadata</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <h2>批量更新 Metadata</h2>
+              <p>由服务层逐条调用 RAGFlow 单文档更新接口。</p>
+            </div>
+            <form id="batch-metadata-form" class="form-grid">
+              <label>
+                <span>Dataset ID</span>
+                <input name="dataset_id" required placeholder="kb_123" />
+              </label>
+              <label class="wide">
+                <span>documents JSON</span>
+                <textarea
+                  name="documents"
+                  rows="8"
+                  required
+                  placeholder='[{"document_id":"doc_1","meta_fields":{"tenant":"acme","department":"hr"}}]'
+                ></textarea>
+              </label>
+              <div class="actions wide">
+                <button class="button" type="submit">批量更新</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <h2>检索并按 Metadata 过滤</h2>
+              <p>直接按文档里的 “Retrieve Chunks” 接口字段发请求，请求路径为 `/api/v1/retrieval`。</p>
+            </div>
+            <form id="retrieve-form" class="form-grid">
+              <label class="wide">
+                <span>问题</span>
+                <textarea name="question" rows="3" required placeholder="合同终止条件是什么？"></textarea>
+              </label>
+              <label>
+                <span>dataset_ids</span>
+                <input name="dataset_ids" placeholder="kb_123,kb_456" />
+              </label>
+              <label>
+                <span>document_ids</span>
+                <input name="document_ids" placeholder="doc_1,doc_2" />
+              </label>
+              <label>
+                <span>page</span>
+                <input name="page" type="number" min="1" value="1" />
+              </label>
+              <label>
+                <span>page_size</span>
+                <input name="page_size" type="number" min="1" value="10" />
+              </label>
+              <label>
+                <span>similarity_threshold</span>
+                <input name="similarity_threshold" type="number" step="0.01" placeholder="0.2" />
+              </label>
+              <label>
+                <span>vector_similarity_weight</span>
+                <input name="vector_similarity_weight" type="number" step="0.01" placeholder="0.3" />
+              </label>
+              <label>
+                <span>top_k</span>
+                <input name="top_k" type="number" min="1" placeholder="1024" />
+              </label>
+              <label>
+                <span>rerank_id</span>
+                <input name="rerank_id" placeholder="可选" />
+              </label>
+              <label>
+                <span>cross_languages</span>
+                <input name="cross_languages" placeholder="zh,en" />
+              </label>
+              <label class="toggle">
+                <input name="keyword" type="checkbox" />
+                <span>启用关键词匹配</span>
+              </label>
+              <label class="toggle">
+                <input name="highlight" type="checkbox" checked />
+                <span>高亮检索结果</span>
+              </label>
+              <label class="toggle">
+                <input name="use_kg" type="checkbox" />
+                <span>启用知识图谱补充</span>
+              </label>
+              <div class="wide filter-block">
+                <div class="subhead">
+                  <h3>metadata_condition.conditions</h3>
+                  <button id="add-filter" class="button ghost" type="button">新增过滤条件</button>
+                </div>
+                <div id="filter-list" class="filter-list"></div>
+              </div>
+              <div class="actions wide">
+                <button class="button" type="submit">执行检索</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <h2>查看文档列表</h2>
+              <p>透传到文档列表接口，方便确认 `document_id`、解析状态和文件名。</p>
+            </div>
+            <form id="list-form" class="form-grid">
+              <label>
+                <span>Dataset ID</span>
+                <input name="dataset_id" required placeholder="kb_123" />
+              </label>
+              <label>
+                <span>page</span>
+                <input name="page" type="number" min="1" value="1" />
+              </label>
+              <label>
+                <span>page_size</span>
+                <input name="page_size" type="number" min="1" value="20" />
+              </label>
+              <label>
+                <span>keywords</span>
+                <input name="keywords" placeholder="合同" />
+              </label>
+              <label>
+                <span>name</span>
+                <input name="name" placeholder="manual.txt" />
+              </label>
+              <label>
+                <span>run</span>
+                <input name="run" placeholder="DONE,UNSTART" />
+              </label>
+              <label>
+                <span>suffix</span>
+                <input name="suffix" placeholder="pdf,txt" />
+              </label>
+              <label>
+                <span>orderby</span>
+                <select name="orderby">
+                  <option value="">默认</option>
+                  <option value="create_time">create_time</option>
+                  <option value="update_time">update_time</option>
+                </select>
+              </label>
+              <label class="toggle">
+                <input name="desc" type="checkbox" checked />
+                <span>倒序</span>
+              </label>
+              <div class="actions wide">
+                <button class="button" type="submit">查询文档</button>
+              </div>
+            </form>
+          </article>
+        </div>
+
+        <aside class="result-pane">
+          <div class="result-head">
+            <div>
+              <p class="eyebrow">Request / Response</p>
+              <h2>验证输出</h2>
+            </div>
+            <button id="clear-output" class="button ghost" type="button">清空</button>
+          </div>
+          <section class="result-section">
+            <h3>最近请求</h3>
+            <pre id="request-preview">暂无</pre>
+          </section>
+          <section class="result-section">
+            <h3>最近响应</h3>
+            <pre id="response-preview">暂无</pre>
+          </section>
+          <section class="result-section">
+            <h3>操作日志</h3>
+            <ul id="activity-log" class="activity-log"></ul>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <template id="filter-template">
+      <div class="filter-row">
+        <input data-field="name" placeholder="字段名，如 tenant" />
+        <select data-field="operator">
+          <option value="=">=</option>
+          <option value="contains">contains</option>
+          <option value="not contains">not contains</option>
+          <option value="start with">start with</option>
+          <option value="empty">empty</option>
+          <option value="not empty">not empty</option>
+          <option value="≠">≠</option>
+          <option value=">">></option>
+          <option value="<"><</option>
+          <option value="≥">≥</option>
+          <option value="≤">≤</option>
+        </select>
+        <input data-field="value" placeholder="值" />
+        <button class="button ghost remove-filter" type="button">删除</button>
+      </div>
+    </template>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
