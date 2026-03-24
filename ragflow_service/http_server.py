@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .exceptions import ConfigError, LLMAPIError, RagflowAPIError, ValidationError
+from .exceptions import ConfigError, KnowledgePortalAPIError, LLMAPIError, RagflowAPIError, ValidationError
+from .knowledge_portal_service import KnowledgePortalSyncService
 from .llm_client import OpenAICompatibleClient
 from .qa_service import KnowledgeBaseQAService, get_prompt_template_metadata
 from .ragflow_client import FileUpload, RagflowClient, UpstreamResponse
@@ -90,8 +91,26 @@ if FASTAPI_IMPORT_ERROR is None:
         user_prompt_template: str | None = None
 
         model_config = ConfigDict(extra="allow")
+
+
+    class KnowledgePortalSyncRequest(BaseModel):
+        base_url: str = Field(..., description="Knowledge portal base URL, for example https://km.seres.cn")
+        community_id: str = Field(..., description="Knowledge portal access key")
+        username: str = Field(..., description="Knowledge portal username for Basic Auth")
+        password: str = Field(..., description="Knowledge portal password for Basic Auth")
+        type: str = Field(default="mutildoc", description="Portal document type")
+        page_size: int = Field(default=100, description="Page size used when traversing the list API")
+        max_download_files: int | None = Field(
+            default=None,
+            description="Maximum number of binary files to download from the attachment API",
+        )
+        begin_time: str | None = Field(default=None, description="Only fetch documents updated after this time")
+        fd_cate_id: str | None = Field(default=None, description="Optional category ID filter")
+        timeout: float | None = Field(default=None, description="Optional request timeout override in seconds")
+
+        model_config = ConfigDict(extra="forbid")
 else:  # pragma: no cover - import guard only
-    RetrievalRequest = DocumentUpdateRequest = ParseDocumentsRequest = QuestionAnswerRequest = object
+    RetrievalRequest = DocumentUpdateRequest = ParseDocumentsRequest = QuestionAnswerRequest = KnowledgePortalSyncRequest = object
 
 
 class ServiceRuntime:
@@ -99,6 +118,7 @@ class ServiceRuntime:
         self._settings = settings
         self._client = self._build_client(settings)
         self._llm_client = self._build_llm_client(settings)
+        self._knowledge_portal_service = self._build_knowledge_portal_service(settings)
 
     def get_client(self) -> RagflowClient:
         if self._client is None:
@@ -120,6 +140,9 @@ class ServiceRuntime:
     def build_qa_service(self) -> KnowledgeBaseQAService:
         return KnowledgeBaseQAService(self.get_client(), self.get_llm_client())
 
+    def get_knowledge_portal_service(self) -> KnowledgePortalSyncService:
+        return self._knowledge_portal_service
+
     def _build_client(self, settings: Settings) -> RagflowClient | None:
         if not settings.is_ragflow_configured():
             return None
@@ -138,6 +161,9 @@ class ServiceRuntime:
             model=settings.llm_model,
             timeout=settings.llm_timeout,
         )
+
+    def _build_knowledge_portal_service(self, settings: Settings) -> KnowledgePortalSyncService:
+        return KnowledgePortalSyncService(default_timeout=settings.request_timeout)
 
 
 def create_application(settings: Settings | None = None):
@@ -177,6 +203,13 @@ def create_application(settings: Settings | None = None):
             content["payload"] = exc.payload
         return JSONResponse(status_code=exc.status_code, content=content)
 
+    @app.exception_handler(KnowledgePortalAPIError)
+    async def handle_knowledge_portal_error(request: Any, exc: KnowledgePortalAPIError) -> JSONResponse:
+        content: dict[str, Any] = {"detail": str(exc)}
+        if exc.payload:
+            content["payload"] = exc.payload
+        return JSONResponse(status_code=exc.status_code, content=content)
+
     @app.exception_handler(ValidationError)
     async def handle_validation_error(request: Any, exc: ValidationError) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
@@ -208,6 +241,12 @@ def create_application(settings: Settings | None = None):
     @app.get("/api/v1/qa/prompt-templates", tags=["Knowledge Base QA"])
     async def get_prompt_templates() -> JSONResponse:
         return JSONResponse(status_code=200, content={"code": 0, "data": get_prompt_template_metadata()})
+
+    @app.post("/api/v1/knowledge-portal/documents/sync", tags=["Knowledge Portal"])
+    async def sync_knowledge_portal_documents(payload: KnowledgePortalSyncRequest) -> JSONResponse:
+        service = runtime.get_knowledge_portal_service()
+        result = service.sync_documents(payload.model_dump(exclude_none=True))
+        return JSONResponse(status_code=200, content={"code": 0, "data": result})
 
     @app.get("/api/v1/datasets/{dataset_id}/documents", tags=["RAGFlow Raw APIs"])
     async def list_documents(

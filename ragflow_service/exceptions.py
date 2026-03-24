@@ -28,3 +28,13 @@ class LLMAPIError(ServiceError):
         self.status_code = status_code
         self.code = code
         self.payload = payload or {}
+
+
+class KnowledgePortalAPIError(ServiceError):
+    """Raised when the upstream knowledge portal returns a non-success response."""
+
+    def __init__(self, message, status_code=502, code=None, payload=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.code = code
+        self.payload = payload or {}

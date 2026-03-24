@@ -90,6 +90,24 @@ class FakeLLMClient:
         return payload["choices"][0]["message"]["content"]
 
 
+class FakeKnowledgePortalService:
+    def __init__(self):
+        self.calls = []
+
+    def sync_documents(self, payload):
+        self.calls.append(payload)
+        return {
+            "total_documents": 1,
+            "downloaded_document_count": 1,
+            "downloaded_file_count": 2,
+            "max_download_files": 2,
+            "download_limit_reached": True,
+            "output_dir": "/tmp/output/attachments",
+            "documents": [{"fdId": "doc-1"}],
+            "errors": [],
+        }
+
+
 class HttpServerApiTests(unittest.TestCase):
     def setUp(self):
         app = create_application(
@@ -107,9 +125,11 @@ class HttpServerApiTests(unittest.TestCase):
         )
         app.state.runtime._client = FakeClient()
         app.state.runtime._llm_client = FakeLLMClient()
+        app.state.runtime._knowledge_portal_service = FakeKnowledgePortalService()
         self.client = TestClient(app)
         self.fake_client = app.state.runtime._client
         self.fake_llm = app.state.runtime._llm_client
+        self.fake_knowledge_portal = app.state.runtime._knowledge_portal_service
 
     def test_root_serves_console_page(self):
         response = self.client.get("/")
@@ -129,6 +149,35 @@ class HttpServerApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["data"]["system_prompt"], get_default_prompt_templates()["system_prompt"])
         self.assertIn("{{question}}", response.json()["data"]["supported_variables"])
+
+    def test_knowledge_portal_sync_route_returns_download_summary(self):
+        response = self.client.post(
+            "/api/v1/knowledge-portal/documents/sync",
+            json={
+                "base_url": "https://km.seres.cn",
+                "community_id": "community",
+                "username": "sereskms",
+                "password": "sereskms@2025",
+                "page_size": 50,
+                "max_download_files": 2,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.fake_knowledge_portal.calls[0],
+            {
+                "base_url": "https://km.seres.cn",
+                "community_id": "community",
+                "username": "sereskms",
+                "password": "sereskms@2025",
+                "type": "mutildoc",
+                "page_size": 50,
+                "max_download_files": 2,
+            },
+        )
+        self.assertTrue(response.json()["data"]["download_limit_reached"])
+        self.assertEqual(response.json()["data"]["downloaded_file_count"], 2)
 
     def test_retrieval_route_proxies_raw_payload(self):
         response = self.client.post(
