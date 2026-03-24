@@ -1,0 +1,4 @@
+interface:
+  display_name: "RAGFlow MCP Backend"
+  short_description: "Extend the Python RAGFlow service safely"
+  default_prompt: "Use $ragflow-mcp-backend to extend the Python RAGFlow service in this repository."

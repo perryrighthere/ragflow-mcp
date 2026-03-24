@@ -1,0 +1,4 @@
+interface:
+  display_name: "RAGFlow MCP Console"
+  short_description: "Evolve the built-in RAGFlow web console"
+  default_prompt: "Use $ragflow-mcp-console to update the static web console for this repository."

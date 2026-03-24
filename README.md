@@ -1,210 +1,175 @@
-# RAGFlow 文档服务
+# RAGFlow Raw API CLI / FastAPI Proxy
 
-这个仓库现在提供了一个可直接运行的 Python 服务，用来封装你当前最需要的三类能力：
+这个仓库现在只保留两种交互方式：
 
-- 上传文档，并在上传后立刻补写 `meta_fields`
-- 基于 `metadata_condition` 做检索过滤
-- 更新单个或批量文档的 metadata 标签
+- CLI 命令
+- FastAPI `/docs` 页面
 
-实现完全基于 `http_api_reference.md` 中已经明确给出的接口：
+不再提供前端页面，也不再封装新的业务 API。服务只暴露当前仓库里用到的原始 RAGFlow API 路径，并把上游响应按原样透传回来。
 
+## 当前能力
+
+- `GET /v1/system/healthz`
+- `POST /api/v1/retrieval`
+- `GET /api/v1/datasets/{dataset_id}/documents`
 - `POST /api/v1/datasets/{dataset_id}/documents`
 - `PUT /api/v1/datasets/{dataset_id}/documents/{document_id}`
 - `POST /api/v1/datasets/{dataset_id}/chunks`
-- `POST /api/v1/retrieval`
-- `GET /api/v1/datasets/{dataset_id}/documents`
-- `GET /v1/system/healthz`
 
-## 设计说明
+所有上游调用都会直接打印到 CLI 输出里，包括：
 
-RAGFlow 的上传接口本身不能直接携带 metadata，因此服务层采用两段式编排：
+- 请求方法和 URL
+- 完整请求头
+- 原始请求体
+- 等价的 `curl` 原始命令
+- 返回的 HTTP 状态码
+- 返回体
 
-1. 先调用上传接口，拿到 `document_id`
-2. 再逐个调用文档更新接口写入 `meta_fields`
-3. 如果需要，最后触发解析
+注意：为了便于排查问题，请求日志会直接打印 `Authorization` 头，请只在受控调试环境中使用这些日志。
 
-这也是你当前业务里“上传文档时必须带 metadata 标签”最稳妥的实现方式。
+## 依赖安装
+
+项目现在依赖 FastAPI、Uvicorn、python-multipart 和 httpx。
+
+如果你已经在项目根目录有 `.venv`，直接安装：
+
+```bash
+.venv/bin/pip install -r requirements.txt
+```
 
 ## 环境变量
 
-运行前设置。你有两种方式：
+支持系统环境变量和仓库根目录 `.env`。
 
-### 方式 1：使用 `.env`
+可用字段：
 
-先复制示例文件：
+- `RAGFLOW_BASE_URL`
+- `RAGFLOW_API_KEY`
+- `RAGFLOW_TIMEOUT`
+- `SERVICE_HOST`
+- `SERVICE_PORT`
+
+示例：
 
 ```bash
 cp .env.example .env
 ```
 
-然后把 `.env` 里的 `RAGFLOW_BASE_URL` 和 `RAGFLOW_API_KEY` 改成你的实际值。
-
-服务启动时会优先读取系统环境变量；如果系统环境变量没设置，就读取仓库根目录的 `.env`。
-
-### 方式 2：直接 export
+或者直接 export：
 
 ```bash
 export RAGFLOW_BASE_URL="http://127.0.0.1:9380"
 export RAGFLOW_API_KEY="your-api-key"
+export RAGFLOW_TIMEOUT="60"
 export SERVICE_HOST="0.0.0.0"
 export SERVICE_PORT="8080"
-export RAGFLOW_TIMEOUT="60"
 ```
 
-## 启动
+## 启动 FastAPI Docs
 
 ```bash
-python main.py
+.venv/bin/python main.py serve
 ```
 
-启动后直接访问：
+启动后访问：
 
 ```bash
-http://127.0.0.1:8080/
+http://127.0.0.1:8080/docs
 ```
 
-页面会展示一个零依赖前端控制台，用来直接验证上传文档、metadata 更新、metadata 过滤检索和文档列表查询。
-前端页面顶部还支持读取和保存当前运行配置；保存后会写入仓库根目录的 `.env`，并立即切换服务运行时使用的 RAGFlow 地址和 API Key。`SERVICE_HOST` 与 `SERVICE_PORT` 会写入 `.env`，但需要重启服务后生效。
-如果启动时还没配置 `RAGFLOW_BASE_URL` / `RAGFLOW_API_KEY`，服务现在也可以正常启动；此时先打开页面填写配置即可。未配置阶段，依赖 RAGFlow 的业务接口会返回 `503`。
+如果还没配置 `RAGFLOW_BASE_URL` / `RAGFLOW_API_KEY`，`/docs` 页面仍然能打开，但实际调用上游接口时会返回 `503`。
 
-## 对外接口
+## CLI 用法
 
-### 1. 健康检查
+统一入口：
 
 ```bash
-curl http://127.0.0.1:8080/health
+.venv/bin/python main.py request METHOD PATH [--json JSON] [--query JSON] [--file PATH]
 ```
 
-### 0. 读取/更新运行配置
+说明：
 
-读取当前配置：
+- `METHOD`：HTTP 方法，例如 `GET`、`POST`、`PUT`
+- `PATH`：原始 RAGFlow 路径，例如 `/api/v1/retrieval`
+- `--json`：JSON 请求体，必须是 JSON 对象
+- `--query`：查询参数，必须是 JSON 对象
+- `--file`：上传文件路径，可重复传入
+- `--no-auth`：跳过 `Authorization` 头，适合 `/v1/system/healthz`
+- `--base-url` / `--api-key` / `--timeout`：只覆盖当前命令
+
+## CLI 示例
+
+健康检查：
 
 ```bash
-curl http://127.0.0.1:8080/api/v1/settings
+.venv/bin/python main.py request GET /v1/system/healthz --no-auth --base-url http://127.0.0.1:9380
 ```
 
-更新配置。`ragflow_base_url`、`ragflow_api_key`、`request_timeout` 会立即作用到运行时；`server_host`、`server_port` 需要重启后生效：
+检索 chunks：
 
 ```bash
-curl --request PUT \
-  --url http://127.0.0.1:8080/api/v1/settings \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "ragflow_base_url": "http://127.0.0.1:9380",
-    "ragflow_api_key": "your-api-key",
-    "request_timeout": 60,
-    "server_host": "0.0.0.0",
-    "server_port": 8080
-  }'
+.venv/bin/python main.py request POST /api/v1/retrieval \
+  --json '{"question":"五看六定是什么？","dataset_ids":["kb_123"],"page_size":6,"highlight":true}'
 ```
 
-### 2. 上传文档并写 metadata
-
-`shared_meta_fields` 会作用到所有上传文件，`per_file_meta_fields` 可以按文件名覆盖或补充。
+查询文档列表：
 
 ```bash
-curl --request POST \
-  --url http://127.0.0.1:8080/api/v1/documents/upload \
-  --form 'dataset_id=kb_123' \
-  --form 'parse_after_upload=true' \
-  --form 'enabled=1' \
-  --form 'shared_meta_fields={"tenant":"acme","project":"rag"}' \
-  --form 'per_file_meta_fields={"contract.pdf":{"department":"legal"}}' \
-  --form 'files=@./contract.pdf' \
-  --form 'files=@./manual.txt'
+.venv/bin/python main.py request GET /api/v1/datasets/kb_123/documents \
+  --query '{"page":1,"page_size":20,"run":["DONE"]}'
 ```
 
-### 3. 更新单个文档 metadata
+上传文档：
 
 ```bash
-curl --request PUT \
-  --url http://127.0.0.1:8080/api/v1/documents/kb_123/doc_456/metadata \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "meta_fields": {
-      "tenant": "acme",
-      "department": "finance",
-      "year": "2026"
-    },
-    "enabled": 1
-  }'
+.venv/bin/python main.py request POST /api/v1/datasets/kb_123/documents \
+  --file ./contract.pdf \
+  --file ./manual.txt
 ```
 
-### 4. 批量更新 metadata
+更新单个文档：
 
 ```bash
-curl --request PUT \
-  --url http://127.0.0.1:8080/api/v1/documents/metadata \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "dataset_id": "kb_123",
-    "documents": [
-      {
-        "document_id": "doc_1",
-        "meta_fields": {"tenant": "acme", "department": "hr"}
-      },
-      {
-        "document_id": "doc_2",
-        "meta_fields": {"tenant": "acme", "department": "legal"}
-      }
-    ]
-  }'
+.venv/bin/python main.py request PUT /api/v1/datasets/kb_123/documents/doc_456 \
+  --json '{"meta_fields":{"tenant":"acme","department":"legal"},"enabled":1}'
 ```
 
-### 5. 使用 Retrieve Chunks 检索并按 metadata 过滤
-
-这里直接使用文档里的 `POST /api/v1/retrieval` 接口字段。
-metadata 字段来自文档的 `meta_fields` JSON，不需要预先在 RAGFlow 中单独配置字段 schema。
+触发解析：
 
 ```bash
-curl --request POST \
-  --url http://127.0.0.1:8080/api/v1/retrieval \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "question": "合同终止条件是什么？",
-    "dataset_ids": ["kb_123"],
-    "page": 1,
-    "page_size": 10,
-    "highlight": true,
-    "metadata_condition": {
-      "conditions": [
-        {
-          "name": "tenant",
-          "comparison_operator": "=",
-          "value": "acme"
-        },
-        {
-          "name": "department",
-          "comparison_operator": "=",
-          "value": "legal"
-        }
-      ]
-    }
-  }'
+.venv/bin/python main.py request POST /api/v1/datasets/kb_123/chunks \
+  --json '{"document_ids":["doc_456"]}'
 ```
 
-### 6. 列出数据集文档
+## FastAPI 路由说明
 
-直接透传到 RAGFlow 的文档列表接口，便于查询已有文档 ID。
+这里的 FastAPI 只负责两件事：
+
+- 提供 `/docs`
+- 把请求原样转发到上游 RAGFlow
+
+也就是说：
+
+- 不再提供 `/api/v1/settings`
+- 不再提供 `/api/v1/documents/upload`
+- 不再提供 `/api/v1/documents/.../metadata`
+- 不再提供 `/api/v1/qa/answer`
+
+## 测试
+
+在项目虚拟环境里执行：
 
 ```bash
-curl 'http://127.0.0.1:8080/api/v1/datasets/kb_123/documents?page=1&page_size=20&run=DONE'
+.venv/bin/python -m unittest tests.test_config tests.test_ragflow_client tests.test_http_server_api tests.test_main
 ```
 
 ## 代码结构
 
-- `/home/perry/ragflow-mcp/main.py`：启动入口
-- `/home/perry/ragflow-mcp/ragflow_service/ragflow_client.py`：RAGFlow HTTP 调用封装
-- `/home/perry/ragflow-mcp/ragflow_service/document_service.py`：上传、metadata 更新、检索过滤编排
-- `/home/perry/ragflow-mcp/ragflow_service/http_server.py`：对外 HTTP 服务
-- `/home/perry/ragflow-mcp/frontend/index.html`：前端页面
-- `/home/perry/ragflow-mcp/frontend/app.js`：前端交互逻辑
-- `/home/perry/ragflow-mcp/frontend/app.css`：前端样式
-- `/home/perry/ragflow-mcp/tests/test_document_service.py`：核心业务逻辑测试
-
-## 当前边界
-
-- 文档实现里只使用了 `http_api_reference.md` 明确写出的接口与字段。
-- metadata 的写入方式遵循文档：通过 `PUT /api/v1/datasets/{dataset_id}/documents/{document_id}` 的 `meta_fields` 直接写入 JSON。
-- RAGFlow 官方“设置元数据”指南说明元数据是逐文档设置的，不支持原生批量设置；这里的批量更新能力是服务层循环调用单文档更新接口实现的。
-- 单文档 metadata 更新默认按调用方传入的 `meta_fields` 整体提交，不做“先读后 merge”的隐式补齐，因为接口文档没有提供稳定的文档详情读取结构用于安全合并。
+- `main.py`：CLI 入口，支持 `serve` 和 `request`
+- `ragflow_service/config.py`：读取 `.env` 和系统环境变量
+- `ragflow_service/ragflow_client.py`：原始 RAGFlow HTTP 调用和 CLI 日志输出
+- `ragflow_service/http_server.py`：FastAPI 应用和 `/docs`
+- `tests/test_config.py`：配置测试
+- `tests/test_ragflow_client.py`：上游调用测试
+- `tests/test_http_server_api.py`：FastAPI 路由测试
+- `tests/test_main.py`：CLI 测试

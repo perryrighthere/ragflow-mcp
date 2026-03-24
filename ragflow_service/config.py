@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
 
 from .exceptions import ConfigError
 
@@ -21,44 +20,15 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         file_values = _load_dotenv(ENV_FILE)
-        return cls.from_sources(file_values, require_ragflow=False)
+        return cls.from_sources(file_values)
 
     @classmethod
-    def from_payload(
-        cls,
-        payload: dict[str, Any],
-        fallback: "Settings | None" = None,
-    ) -> "Settings":
-        fallback = fallback or cls.from_env()
-        values = {
-            "RAGFLOW_BASE_URL": str(payload.get("ragflow_base_url") or fallback.ragflow_base_url),
-            "RAGFLOW_API_KEY": str(payload.get("ragflow_api_key") or fallback.ragflow_api_key),
-            "RAGFLOW_TIMEOUT": str(payload.get("request_timeout", fallback.request_timeout)),
-            "SERVICE_HOST": str(payload.get("server_host") or fallback.server_host),
-            "SERVICE_PORT": str(payload.get("server_port", fallback.server_port)),
-        }
-        return cls.from_sources(values, prefer_os_env=False, require_ragflow=True)
-
-    @classmethod
-    def from_sources(
-        cls,
-        file_values: dict[str, str],
-        *,
-        prefer_os_env: bool = True,
-        require_ragflow: bool = True,
-    ) -> "Settings":
-        if prefer_os_env:
-            base_url = _get_config_value("RAGFLOW_BASE_URL", file_values)
-            api_key = _get_config_value("RAGFLOW_API_KEY", file_values)
-            timeout_raw = _get_config_value("RAGFLOW_TIMEOUT", file_values, default="60")
-            host = _get_config_value("SERVICE_HOST", file_values, default="0.0.0.0") or "0.0.0.0"
-            port_raw = _get_config_value("SERVICE_PORT", file_values, default="8080")
-        else:
-            base_url = file_values.get("RAGFLOW_BASE_URL", "").strip()
-            api_key = file_values.get("RAGFLOW_API_KEY", "").strip()
-            timeout_raw = file_values.get("RAGFLOW_TIMEOUT", "60").strip()
-            host = file_values.get("SERVICE_HOST", "0.0.0.0").strip() or "0.0.0.0"
-            port_raw = file_values.get("SERVICE_PORT", "8080").strip()
+    def from_sources(cls, file_values: dict[str, str], *, prefer_os_env: bool = True) -> "Settings":
+        base_url = _get_config_value("RAGFLOW_BASE_URL", file_values, prefer_os_env=prefer_os_env)
+        api_key = _get_config_value("RAGFLOW_API_KEY", file_values, prefer_os_env=prefer_os_env)
+        timeout_raw = _get_config_value("RAGFLOW_TIMEOUT", file_values, default="60", prefer_os_env=prefer_os_env)
+        host = _get_config_value("SERVICE_HOST", file_values, default="0.0.0.0", prefer_os_env=prefer_os_env) or "0.0.0.0"
+        port_raw = _get_config_value("SERVICE_PORT", file_values, default="8080", prefer_os_env=prefer_os_env)
 
         try:
             timeout = float(timeout_raw)
@@ -70,12 +40,6 @@ class Settings:
         except ValueError as exc:
             raise ConfigError("SERVICE_PORT must be an integer") from exc
 
-        if require_ragflow:
-            if not base_url:
-                raise ConfigError("Missing required env var: RAGFLOW_BASE_URL")
-            if not api_key:
-                raise ConfigError("Missing required env var: RAGFLOW_API_KEY")
-
         return cls(
             ragflow_base_url=base_url.rstrip("/"),
             ragflow_api_key=api_key,
@@ -84,33 +48,46 @@ class Settings:
             server_port=port,
         )
 
-    def to_payload(self, *, mask_secret: bool = True) -> dict[str, Any]:
-        return {
-            "ragflow_base_url": self.ragflow_base_url,
-            "ragflow_api_key": _mask_secret(self.ragflow_api_key) if mask_secret else self.ragflow_api_key,
-            "request_timeout": self.request_timeout,
-            "server_host": self.server_host,
-            "server_port": self.server_port,
-            "configured": self.is_ragflow_configured(),
-        }
+    def with_overrides(
+        self,
+        *,
+        ragflow_base_url: str | None = None,
+        ragflow_api_key: str | None = None,
+        request_timeout: float | None = None,
+        server_host: str | None = None,
+        server_port: int | None = None,
+    ) -> "Settings":
+        return replace(
+            self,
+            ragflow_base_url=(ragflow_base_url or self.ragflow_base_url).rstrip("/"),
+            ragflow_api_key=ragflow_api_key if ragflow_api_key is not None else self.ragflow_api_key,
+            request_timeout=request_timeout if request_timeout is not None else self.request_timeout,
+            server_host=server_host or self.server_host,
+            server_port=server_port if server_port is not None else self.server_port,
+        )
 
-    def to_env_mapping(self) -> dict[str, str]:
-        return {
-            "RAGFLOW_BASE_URL": self.ragflow_base_url,
-            "RAGFLOW_API_KEY": self.ragflow_api_key,
-            "RAGFLOW_TIMEOUT": str(self.request_timeout),
-            "SERVICE_HOST": self.server_host,
-            "SERVICE_PORT": str(self.server_port),
-        }
+    def require_ragflow(self) -> "Settings":
+        if not self.ragflow_base_url:
+            raise ConfigError("Missing required env var: RAGFLOW_BASE_URL")
+        if not self.ragflow_api_key:
+            raise ConfigError("Missing required env var: RAGFLOW_API_KEY")
+        return self
 
     def is_ragflow_configured(self) -> bool:
         return bool(self.ragflow_base_url and self.ragflow_api_key)
 
 
-def _get_config_value(name: str, file_values: dict[str, str], default: str = "") -> str:
-    value = os.getenv(name)
-    if value is not None:
-        return value.strip()
+def _get_config_value(
+    name: str,
+    file_values: dict[str, str],
+    *,
+    default: str = "",
+    prefer_os_env: bool = True,
+) -> str:
+    if prefer_os_env:
+        value = os.getenv(name)
+        if value is not None:
+            return value.strip()
     return file_values.get(name, default).strip()
 
 
@@ -131,7 +108,6 @@ def _load_dotenv(path: Path) -> dict[str, str]:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip()
-
         if not key:
             continue
 
@@ -141,37 +117,3 @@ def _load_dotenv(path: Path) -> dict[str, str]:
         values[key] = value
 
     return values
-
-
-def write_dotenv(path: Path, values: dict[str, str]) -> None:
-    ordered_keys = [
-        "RAGFLOW_BASE_URL",
-        "RAGFLOW_API_KEY",
-        "RAGFLOW_TIMEOUT",
-        "SERVICE_HOST",
-        "SERVICE_PORT",
-    ]
-    lines = []
-    for key in ordered_keys:
-        if key in values:
-            lines.append(f"{key}={_quote_env_value(values[key])}")
-    for key in sorted(values):
-        if key not in ordered_keys:
-            lines.append(f"{key}={_quote_env_value(values[key])}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _quote_env_value(value: Any) -> str:
-    text = str(value)
-    if text == "":
-        return '""'
-    if any(ch.isspace() for ch in text) or any(ch in text for ch in {'"', "'", "#"}):
-        escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
-    return text
-
-
-def _mask_secret(secret: str) -> str:
-    if len(secret) <= 8:
-        return "*" * len(secret)
-    return f"{secret[:4]}{'*' * (len(secret) - 8)}{secret[-4:]}"

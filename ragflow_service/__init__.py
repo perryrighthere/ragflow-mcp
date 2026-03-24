@@ -1,2 +1,1 @@
-"""RAGFlow document service package."""
-
+"""RAGFlow raw API proxy package."""
