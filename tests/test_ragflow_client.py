@@ -103,6 +103,16 @@ class RagflowClientTests(unittest.TestCase):
             with self.assertRaises(RagflowAPIError):
                 client.request_json("GET", "/v1/system/healthz", use_auth=False)
 
+    def test_request_json_raises_for_connection_reset_errors(self):
+        client = RagflowClient("http://ragflow.local:9380", "secret-key")
+
+        with patch(
+            "ragflow_service.ragflow_client.request.urlopen",
+            side_effect=ConnectionResetError(54, "Connection reset by peer"),
+        ):
+            with self.assertRaisesRegex(RagflowAPIError, "Connection reset by peer"):
+                client.request_json("POST", "/api/v1/retrieval", json_body={"question": "hi"})
+
 
 if __name__ == "__main__":
     unittest.main()

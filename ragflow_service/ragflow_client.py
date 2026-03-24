@@ -4,6 +4,7 @@ import json
 import logging
 import mimetypes
 import shlex
+import socket
 import sys
 import uuid
 from dataclasses import dataclass
@@ -175,6 +176,8 @@ class RagflowClient:
             )
         except error.URLError as exc:
             raise RagflowAPIError(f"Unable to connect to RAGFlow: {exc.reason}", status_code=502) from exc
+        except (ConnectionError, TimeoutError, OSError, socket.timeout) as exc:
+            raise RagflowAPIError(f"Unable to connect to RAGFlow: {exc}", status_code=502) from exc
 
         self._log_response(upstream)
         return upstream

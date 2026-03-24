@@ -19,3 +19,12 @@ class RagflowAPIError(ServiceError):
         self.code = code
         self.payload = payload or {}
 
+
+class LLMAPIError(ServiceError):
+    """Raised when the upstream LLM returns a non-success response."""
+
+    def __init__(self, message, status_code=502, code=None, payload=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.code = code
+        self.payload = payload or {}

@@ -1,26 +1,35 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .exceptions import ConfigError, RagflowAPIError
+from .exceptions import ConfigError, LLMAPIError, RagflowAPIError, ValidationError
+from .llm_client import OpenAICompatibleClient
+from .qa_service import KnowledgeBaseQAService, get_prompt_template_metadata
 from .ragflow_client import FileUpload, RagflowClient, UpstreamResponse
 
 try:
     import uvicorn
     from fastapi import FastAPI, File, Query, Request, UploadFile
-    from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
+    from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+    from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, ConfigDict, Field
 except ImportError as exc:  # pragma: no cover - exercised only when deps are missing
     uvicorn = None
     FastAPI = None
     File = Query = Request = UploadFile = None
-    JSONResponse = PlainTextResponse = RedirectResponse = Response = None
+    FileResponse = JSONResponse = PlainTextResponse = RedirectResponse = Response = None
+    StaticFiles = None
     BaseModel = object
     ConfigDict = Field = None
     FASTAPI_IMPORT_ERROR = exc
 else:
     FASTAPI_IMPORT_ERROR = None
+
+
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+FRONTEND_INDEX = FRONTEND_DIR / "index.html"
 
 
 def _require_fastapi() -> None:
@@ -58,14 +67,38 @@ if FASTAPI_IMPORT_ERROR is None:
     class ParseDocumentsRequest(BaseModel):
         document_ids: list[str]
         model_config = ConfigDict(extra="allow")
+
+
+    class QuestionAnswerRequest(BaseModel):
+        question: str = Field(..., description="The user question for the knowledge base agent.")
+        dataset_ids: list[str] | None = None
+        document_ids: list[str] | None = None
+        page: int | None = None
+        page_size: int | None = None
+        similarity_threshold: float | None = None
+        vector_similarity_weight: float | None = None
+        top_k: int | None = None
+        rerank_id: str | int | None = None
+        keyword: bool | None = None
+        highlight: bool | None = None
+        cross_languages: list[str] | None = None
+        metadata_condition: dict[str, Any] | None = None
+        use_kg: bool | None = None
+        temperature: float | None = None
+        max_tokens: int | None = None
+        system_prompt: str | None = None
+        user_prompt_template: str | None = None
+
+        model_config = ConfigDict(extra="allow")
 else:  # pragma: no cover - import guard only
-    RetrievalRequest = DocumentUpdateRequest = ParseDocumentsRequest = object
+    RetrievalRequest = DocumentUpdateRequest = ParseDocumentsRequest = QuestionAnswerRequest = object
 
 
 class ServiceRuntime:
     def __init__(self, settings: Settings):
         self._settings = settings
         self._client = self._build_client(settings)
+        self._llm_client = self._build_llm_client(settings)
 
     def get_client(self) -> RagflowClient:
         if self._client is None:
@@ -77,6 +110,16 @@ class ServiceRuntime:
     def get_settings(self) -> Settings:
         return self._settings
 
+    def get_llm_client(self) -> OpenAICompatibleClient:
+        if self._llm_client is None:
+            raise ConfigError(
+                "LLM is not configured. Set LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL in the environment or .env first."
+            )
+        return self._llm_client
+
+    def build_qa_service(self) -> KnowledgeBaseQAService:
+        return KnowledgeBaseQAService(self.get_client(), self.get_llm_client())
+
     def _build_client(self, settings: Settings) -> RagflowClient | None:
         if not settings.is_ragflow_configured():
             return None
@@ -86,6 +129,16 @@ class ServiceRuntime:
             timeout=settings.request_timeout,
         )
 
+    def _build_llm_client(self, settings: Settings) -> OpenAICompatibleClient | None:
+        if not settings.is_llm_configured():
+            return None
+        return OpenAICompatibleClient(
+            base_url=settings.llm_base_url,
+            api_key=settings.llm_api_key,
+            model=settings.llm_model,
+            timeout=settings.llm_timeout,
+        )
+
 
 def create_application(settings: Settings | None = None):
     _require_fastapi()
@@ -93,15 +146,18 @@ def create_application(settings: Settings | None = None):
     runtime = ServiceRuntime(settings)
 
     app = FastAPI(
-        title="RAGFlow Raw API CLI Proxy",
-        summary="Thin FastAPI layer over raw RAGFlow APIs",
+        title="RAGFlow Knowledge Base QA Service",
+        summary="RAGFlow retrieval proxy with a knowledge base Q&A agent and simple web console",
         description=(
-            "This service exposes the raw RAGFlow endpoints currently used in this repository. "
-            "Use `/docs` for interactive requests or the CLI command in `main.py`."
+            "This service keeps the raw RAGFlow proxy routes and adds a simple knowledge base "
+            "Q&A API backed by an OpenAI-compatible LLM."
         ),
-        version="2.0.0",
+        version="3.0.0",
     )
     app.state.runtime = runtime
+
+    if FRONTEND_DIR.is_dir():
+        app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
     @app.exception_handler(ConfigError)
     async def handle_config_error(request: Any, exc: ConfigError) -> JSONResponse:
@@ -114,8 +170,21 @@ def create_application(settings: Settings | None = None):
             content["payload"] = exc.payload
         return JSONResponse(status_code=exc.status_code, content=content)
 
+    @app.exception_handler(LLMAPIError)
+    async def handle_llm_error(request: Any, exc: LLMAPIError) -> JSONResponse:
+        content: dict[str, Any] = {"detail": str(exc)}
+        if exc.payload:
+            content["payload"] = exc.payload
+        return JSONResponse(status_code=exc.status_code, content=content)
+
+    @app.exception_handler(ValidationError)
+    async def handle_validation_error(request: Any, exc: ValidationError) -> JSONResponse:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
     @app.get("/", include_in_schema=False)
-    async def root() -> RedirectResponse:
+    async def root() -> Response:
+        if FRONTEND_INDEX.is_file():
+            return FileResponse(FRONTEND_INDEX)
         return RedirectResponse(url="/docs")
 
     @app.get("/v1/system/healthz", tags=["RAGFlow Raw APIs"])
@@ -129,6 +198,16 @@ def create_application(settings: Settings | None = None):
         client = runtime.get_client()
         upstream = client.retrieve_chunks(payload.model_dump(exclude_none=True))
         return _response_from_upstream(upstream)
+
+    @app.post("/api/v1/qa/answer", tags=["Knowledge Base QA"])
+    async def answer_question(payload: QuestionAnswerRequest) -> JSONResponse:
+        qa_service = runtime.build_qa_service()
+        answer = qa_service.answer_question(payload.model_dump(exclude_none=True))
+        return JSONResponse(status_code=200, content={"code": 0, "data": answer})
+
+    @app.get("/api/v1/qa/prompt-templates", tags=["Knowledge Base QA"])
+    async def get_prompt_templates() -> JSONResponse:
+        return JSONResponse(status_code=200, content={"code": 0, "data": get_prompt_template_metadata()})
 
     @app.get("/api/v1/datasets/{dataset_id}/documents", tags=["RAGFlow Raw APIs"])
     async def list_documents(

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RAGFlow KB QA</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">RAGFlow + OpenAI-Compatible LLM</p>
+        <h1>Knowledge Base Q&amp;A Console</h1>
+      </section>
+
+      <section class="workspace">
+        <form id="qa-form" class="panel form-panel">
+          <label class="field field-large">
+            <span>Question</span>
+            <textarea
+              id="question"
+              name="question"
+              rows="4"
+              placeholder="例如：五看六定是什么？"
+              required
+            ></textarea>
+          </label>
+
+          <div class="field-grid">
+            <label class="field">
+              <span>Dataset IDs</span>
+              <input id="dataset_ids" name="dataset_ids" placeholder="kb_123,kb_456" />
+            </label>
+            <label class="field">
+              <span>Document IDs</span>
+              <input id="document_ids" name="document_ids" placeholder="doc_001,doc_002" />
+            </label>
+          </div>
+
+          <div class="field-grid">
+            <label class="field">
+              <span>Page Size</span>
+              <input id="page_size" name="page_size" type="number" min="1" max="20" value="6" />
+            </label>
+            <label class="field">
+              <span>Similarity Threshold</span>
+              <input
+                id="similarity_threshold"
+                name="similarity_threshold"
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                placeholder="0.2"
+              />
+            </label>
+            <label class="field">
+              <span>Vector Similarity Weight</span>
+              <input
+                id="vector_similarity_weight"
+                name="vector_similarity_weight"
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                placeholder="0.7"
+              />
+            </label>
+          </div>
+
+          <div class="field-grid">
+            <label class="field">
+              <span>Rerank ID</span>
+              <input id="rerank_id" name="rerank_id" placeholder="rerank-model-id" />
+            </label>
+            <label class="field">
+              <span>Temperature</span>
+              <input id="temperature" name="temperature" type="number" min="0" max="2" step="0.1" placeholder="0.2" />
+            </label>
+            <label class="field">
+              <span>Max Tokens</span>
+              <input id="max_tokens" name="max_tokens" type="number" min="1" step="1" placeholder="1024" />
+            </label>
+          </div>
+
+          <label class="field field-large">
+            <span>Metadata Condition</span>
+            <textarea
+              id="metadata_condition"
+              name="metadata_condition"
+              rows="4"
+              placeholder='例如：{"conditions":[{"name":"doc_type","operator":"=","value":"流程文件"}]}'
+            ></textarea>
+            <small class="field-note">输入合法 JSON；留空则不传该字段。</small>
+          </label>
+
+          <details class="prompt-editor">
+            <summary>
+              <span>Prompt Editor</span>
+              <small>修改系统提示词与用户提示词模板</small>
+            </summary>
+            <div class="prompt-editor-body">
+              <p class="prompt-helper">
+                用户提示词模板支持两个变量：<code>{{question}}</code> 和
+                <code>{{knowledge_snippets}}</code>。
+              </p>
+
+              <div class="prompt-grid">
+                <label class="field">
+                  <span>System Prompt</span>
+                  <textarea
+                    id="system_prompt"
+                    name="system_prompt"
+                    rows="9"
+                    placeholder="留空则使用后端默认 system prompt"
+                  ></textarea>
+                </label>
+                <label class="field">
+                  <span>User Prompt Template</span>
+                  <textarea
+                    id="user_prompt_template"
+                    name="user_prompt_template"
+                    rows="9"
+                    placeholder="留空则使用后端默认 user prompt template"
+                  ></textarea>
+                </label>
+              </div>
+
+              <div class="prompt-actions">
+                <button id="reset-prompts-button" type="button" class="secondary-button">Reset Defaults</button>
+                <p id="prompt-status-text" class="inline-status">Loading default prompt templates...</p>
+              </div>
+            </div>
+          </details>
+
+          <div class="actions">
+            <button id="submit-button" type="submit">Ask Knowledge Base</button>
+            <p id="status-text" class="status">Ready</p>
+          </div>
+        </form>
+
+        <section class="panel answer-panel">
+          <div class="panel-head">
+            <h2>Answer</h2>
+            <p id="meta-text">Waiting for a question.</p>
+          </div>
+          <pre id="answer-output" class="answer-output">Ask a question to see the generated answer.</pre>
+        </section>
+      </section>
+
+      <section class="details-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Sources</h2>
+            <p>Only document name and content are passed to the LLM.</p>
+          </div>
+          <div id="sources-output" class="sources-output">
+            <p class="empty-state">No sources yet.</p>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Request Preview</h2>
+            <p>Payload sent to <code>/api/v1/qa/answer</code>.</p>
+          </div>
+          <pre id="request-output" class="code-output">{}</pre>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Response Preview</h2>
+            <p>Raw JSON response from the service.</p>
+          </div>
+          <pre id="response-output" class="code-output">{}</pre>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>LLM Prompt</h2>
+            <p>Exact messages sent to the OpenAI-compatible API.</p>
+          </div>
+          <pre id="llm-prompt-output" class="code-output">[]</pre>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Activity Log</h2>
+            <p>Quick feedback for manual verification.</p>
+          </div>
+          <div id="log-output" class="log-output"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
