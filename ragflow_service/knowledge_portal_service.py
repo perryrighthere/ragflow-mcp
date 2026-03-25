@@ -55,7 +55,6 @@ class KnowledgePortalSyncService:
         for item in list_items:
             if remaining_download_files == 0:
                 download_limit_reached = True
-                break
 
             fd_id = str(item.get("fdId") or "").strip()
             if not fd_id:
@@ -89,6 +88,8 @@ class KnowledgePortalSyncService:
                     detail_data,
                     document_dir,
                     max_files=remaining_download_files,
+                    include_attachments=normalized["include_attachments"],
+                    include_cover_image=normalized["include_cover_image"],
                 )
                 downloaded_files += len(downloaded)
                 if remaining_download_files is not None:
@@ -197,6 +198,8 @@ class KnowledgePortalSyncService:
         document_dir: Path,
         *,
         max_files: int | None = None,
+        include_attachments: bool = True,
+        include_cover_image: bool = True,
     ) -> list[dict[str, Any]]:
         downloads_dir = document_dir / "attachments"
         downloads_dir.mkdir(parents=True, exist_ok=True)
@@ -205,7 +208,11 @@ class KnowledgePortalSyncService:
         used_names: set[str] = set()
         seen_file_ids: set[str] = set()
 
-        for target in self._iter_download_targets(detail_data):
+        for target in self._iter_download_targets(
+            detail_data,
+            include_attachments=include_attachments,
+            include_cover_image=include_cover_image,
+        ):
             if max_files is not None and len(saved_files) >= max_files:
                 break
             file_id = target["file_id"]
@@ -237,11 +244,17 @@ class KnowledgePortalSyncService:
 
         return saved_files
 
-    def _iter_download_targets(self, detail_data: dict[str, Any]) -> list[dict[str, str]]:
+    def _iter_download_targets(
+        self,
+        detail_data: dict[str, Any],
+        *,
+        include_attachments: bool = True,
+        include_cover_image: bool = True,
+    ) -> list[dict[str, str]]:
         targets: list[dict[str, str]] = []
 
         cover = detail_data.get("fdCoverImg")
-        if isinstance(cover, dict):
+        if include_cover_image and isinstance(cover, dict):
             file_id = str(cover.get("fileId") or "").strip()
             if file_id:
                 targets.append(
@@ -253,7 +266,7 @@ class KnowledgePortalSyncService:
                 )
 
         files = detail_data.get("fdFile")
-        if isinstance(files, list):
+        if include_attachments and isinstance(files, list):
             for item in files:
                 if not isinstance(item, dict):
                     continue
@@ -304,6 +317,8 @@ class KnowledgePortalSyncService:
         page_size_raw = payload.get("page_size", 100)
         max_download_files_raw = payload.get("max_download_files")
         timeout_raw = payload.get("timeout", self.default_timeout)
+        include_attachments = bool(payload.get("include_attachments", True))
+        include_cover_image = bool(payload.get("include_cover_image", True))
         try:
             page_size = int(page_size_raw)
         except (TypeError, ValueError) as exc:
@@ -338,6 +353,8 @@ class KnowledgePortalSyncService:
             "begin_time": begin_time,
             "fd_cate_id": fd_cate_id,
             "timeout": timeout,
+            "include_attachments": include_attachments,
+            "include_cover_image": include_cover_image,
         }
 
     def _extract_filename_from_headers(self, headers: dict[str, str]) -> str | None:

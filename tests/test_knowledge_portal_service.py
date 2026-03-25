@@ -120,7 +120,7 @@ class KnowledgePortalSyncServiceTests(unittest.TestCase):
             payload = json.loads(detail_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["data"]["fdId"], "doc-1")
 
-    def test_sync_documents_respects_max_download_files(self):
+    def test_sync_documents_respects_max_download_files_without_wasting_budget_on_cover_images(self):
         fake_client = FakeKnowledgePortalClient()
 
         def factory(**kwargs):
@@ -139,16 +139,19 @@ class KnowledgePortalSyncServiceTests(unittest.TestCase):
                     "password": "pass",
                     "page_size": 2,
                     "max_download_files": 3,
+                    "include_cover_image": False,
                 }
             )
 
             self.assertEqual(result["max_download_files"], 3)
             self.assertTrue(result["download_limit_reached"])
             self.assertEqual(result["downloaded_file_count"], 3)
-            self.assertEqual(len(result["documents"]), 2)
-            self.assertEqual(len(result["documents"][0]["downloaded_files"]), 2)
+            self.assertEqual(len(result["documents"]), 3)
+            self.assertEqual(len(result["documents"][0]["downloaded_files"]), 1)
             self.assertEqual(len(result["documents"][1]["downloaded_files"]), 1)
+            self.assertEqual(len(result["documents"][2]["downloaded_files"]), 1)
             self.assertEqual(len(fake_client.download_calls), 3)
+            self.assertEqual(fake_client.download_calls, ["file-1", "file-2", "file-3"])
 
 
 if __name__ == "__main__":

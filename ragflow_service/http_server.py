@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
+from .document_service import RagflowDocumentService
 from .exceptions import ConfigError, KnowledgePortalAPIError, LLMAPIError, RagflowAPIError, ValidationError
 from .knowledge_portal_service import KnowledgePortalSyncService
 from .llm_client import OpenAICompatibleClient
@@ -109,8 +110,37 @@ if FASTAPI_IMPORT_ERROR is None:
         timeout: float | None = Field(default=None, description="Optional request timeout override in seconds")
 
         model_config = ConfigDict(extra="forbid")
+
+
+    class KnowledgePortalImportRequest(KnowledgePortalSyncRequest):
+        dataset_id: str = Field(..., description="RAGFlow dataset ID used for the uploaded portal documents")
+        document_update: dict[str, Any] | None = Field(
+            default=None,
+            description=(
+                "Shared payload sent to the RAGFlow document update API after upload. "
+                "Supports fields such as meta_fields, chunk_method, parser_config, enabled, and name."
+            ),
+        )
+        parse_after_upload: bool = Field(
+            default=False,
+            description="Whether to trigger the RAGFlow batch parse API after all document updates succeed",
+        )
+        include_attachments: bool = Field(
+            default=True,
+            description="Whether to upload binary attachment files from fdFile",
+        )
+        include_cover_image: bool = Field(
+            default=False,
+            description="Whether to upload the cover image file from fdCoverImg",
+        )
+        fallback_to_content_markdown: bool = Field(
+            default=True,
+            description="Upload generated content.md when no eligible binary file is available",
+        )
+
+        model_config = ConfigDict(extra="forbid")
 else:  # pragma: no cover - import guard only
-    RetrievalRequest = DocumentUpdateRequest = ParseDocumentsRequest = QuestionAnswerRequest = KnowledgePortalSyncRequest = object
+    RetrievalRequest = DocumentUpdateRequest = ParseDocumentsRequest = QuestionAnswerRequest = KnowledgePortalSyncRequest = KnowledgePortalImportRequest = object
 
 
 class ServiceRuntime:
@@ -139,6 +169,9 @@ class ServiceRuntime:
 
     def build_qa_service(self) -> KnowledgeBaseQAService:
         return KnowledgeBaseQAService(self.get_client(), self.get_llm_client())
+
+    def build_document_service(self) -> RagflowDocumentService:
+        return RagflowDocumentService(self.get_client(), self.get_knowledge_portal_service())
 
     def get_knowledge_portal_service(self) -> KnowledgePortalSyncService:
         return self._knowledge_portal_service
@@ -246,6 +279,12 @@ def create_application(settings: Settings | None = None):
     async def sync_knowledge_portal_documents(payload: KnowledgePortalSyncRequest) -> JSONResponse:
         service = runtime.get_knowledge_portal_service()
         result = service.sync_documents(payload.model_dump(exclude_none=True))
+        return JSONResponse(status_code=200, content={"code": 0, "data": result})
+
+    @app.post("/api/v1/knowledge-portal/documents/import", tags=["Knowledge Portal"])
+    async def import_knowledge_portal_documents(payload: KnowledgePortalImportRequest) -> JSONResponse:
+        service = runtime.build_document_service()
+        result = service.import_knowledge_portal_documents(payload.model_dump(exclude_none=True))
         return JSONResponse(status_code=200, content={"code": 0, "data": result})
 
     @app.get("/api/v1/datasets/{dataset_id}/documents", tags=["RAGFlow Raw APIs"])

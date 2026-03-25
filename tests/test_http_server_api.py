@@ -108,6 +108,28 @@ class FakeKnowledgePortalService:
         }
 
 
+class FakeDocumentService:
+    def __init__(self):
+        self.calls = []
+
+    def import_knowledge_portal_documents(self, payload):
+        self.calls.append(payload)
+        return {
+            "dataset_id": payload["dataset_id"],
+            "total_documents": 1,
+            "downloaded_document_count": 1,
+            "downloaded_file_count": 1,
+            "imported_document_count": 1,
+            "uploaded_file_count": 1,
+            "updated_document_count": 1,
+            "parse_requested": payload.get("parse_after_upload", False),
+            "parsed_document_count": 1 if payload.get("parse_after_upload") else 0,
+            "documents": [{"fdId": "doc-1", "ragflow_documents": [{"document_id": "rf-doc-1"}]}],
+            "skipped_documents": [],
+            "errors": [],
+        }
+
+
 class HttpServerApiTests(unittest.TestCase):
     def setUp(self):
         app = create_application(
@@ -126,6 +148,8 @@ class HttpServerApiTests(unittest.TestCase):
         app.state.runtime._client = FakeClient()
         app.state.runtime._llm_client = FakeLLMClient()
         app.state.runtime._knowledge_portal_service = FakeKnowledgePortalService()
+        self.fake_document_service = FakeDocumentService()
+        app.state.runtime.build_document_service = lambda: self.fake_document_service
         self.client = TestClient(app)
         self.fake_client = app.state.runtime._client
         self.fake_llm = app.state.runtime._llm_client
@@ -178,6 +202,47 @@ class HttpServerApiTests(unittest.TestCase):
         )
         self.assertTrue(response.json()["data"]["download_limit_reached"])
         self.assertEqual(response.json()["data"]["downloaded_file_count"], 2)
+
+    def test_knowledge_portal_import_route_returns_import_summary(self):
+        response = self.client.post(
+            "/api/v1/knowledge-portal/documents/import",
+            json={
+                "base_url": "https://km.seres.cn",
+                "community_id": "community",
+                "username": "sereskms",
+                "password": "sereskms@2025",
+                "dataset_id": "kb_123",
+                "parse_after_upload": True,
+                "document_update": {
+                    "meta_fields": {
+                        "source": "knowledge_portal",
+                    }
+                },
+                "include_cover_image": False,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.fake_document_service.calls[0],
+            {
+                "base_url": "https://km.seres.cn",
+                "community_id": "community",
+                "username": "sereskms",
+                "password": "sereskms@2025",
+                "type": "mutildoc",
+                "page_size": 100,
+                "dataset_id": "kb_123",
+                "document_update": {"meta_fields": {"source": "knowledge_portal"}},
+                "parse_after_upload": True,
+                "include_attachments": True,
+                "include_cover_image": False,
+                "fallback_to_content_markdown": True,
+            },
+        )
+        self.assertEqual(response.json()["data"]["dataset_id"], "kb_123")
+        self.assertEqual(response.json()["data"]["uploaded_file_count"], 1)
+        self.assertEqual(response.json()["data"]["parsed_document_count"], 1)
 
     def test_retrieval_route_proxies_raw_payload(self):
         response = self.client.post(
