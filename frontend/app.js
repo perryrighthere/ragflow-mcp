@@ -14,6 +14,7 @@ const systemPromptInput = document.getElementById("system_prompt");
 const userPromptTemplateInput = document.getElementById("user_prompt_template");
 
 let defaultPromptTemplates = null;
+let answerMarkdown = "";
 
 function parseCsv(value) {
   return value
@@ -60,6 +61,311 @@ function renderJson(target, value) {
 
 function renderLlmMessages(messages) {
   renderJson(llmPromptOutput, Array.isArray(messages) ? messages : []);
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => {
+    const entities = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return entities[character] || character;
+  });
+}
+
+function escapeAttribute(value) {
+  return escapeHtml(value).replace(/`/g, "&#96;");
+}
+
+function sanitizeUrl(url) {
+  const trimmed = String(url || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(trimmed, window.location.origin);
+    if (["http:", "https:", "mailto:"].includes(parsed.protocol)) {
+      return parsed.href;
+    }
+  } catch (error) {
+    return "";
+  }
+
+  return "";
+}
+
+function createHtmlTokenStore() {
+  const tokens = [];
+
+  return {
+    stash(html) {
+      const token = `\u0000HTML${tokens.length}\u0000`;
+      tokens.push(html);
+      return token;
+    },
+    restore(text) {
+      return tokens.reduce(
+        (result, html, index) => result.replaceAll(`\u0000HTML${index}\u0000`, html),
+        text
+      );
+    },
+  };
+}
+
+function renderInlineMarkdown(text) {
+  let value = String(text || "");
+  const tokenStore = createHtmlTokenStore();
+
+  value = value.replace(/`([^`]+)`/g, (_, code) => tokenStore.stash(`<code>${escapeHtml(code)}</code>`));
+  value = value.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, rawDestination) => {
+    const match = String(rawDestination).trim().match(/^(\S+?)(?:\s+["'][^"']*["'])?$/);
+    const safeHref = sanitizeUrl(match ? match[1] : rawDestination);
+    if (!safeHref) {
+      return label;
+    }
+    return tokenStore.stash(
+      `<a href="${escapeAttribute(safeHref)}" target="_blank" rel="noreferrer noopener">${escapeHtml(label)}</a>`
+    );
+  });
+
+  value = escapeHtml(value);
+  value = value.replace(/\*\*([\s\S]+?)\*\*/g, "<strong>$1</strong>");
+  value = value.replace(/__([\s\S]+?)__/g, "<strong>$1</strong>");
+  value = value.replace(/~~([\s\S]+?)~~/g, "<del>$1</del>");
+  value = value.replace(/(^|[^\*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
+  value = value.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, "$1<em>$2</em>");
+
+  return tokenStore.restore(value);
+}
+
+function isHorizontalRule(line) {
+  return /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line);
+}
+
+function isUnorderedListLine(line) {
+  return /^\s*[-+*]\s+/.test(line);
+}
+
+function isOrderedListLine(line) {
+  return /^\s*\d+\.\s+/.test(line);
+}
+
+function isListLine(line) {
+  return isUnorderedListLine(line) || isOrderedListLine(line);
+}
+
+function isTableSeparatorLine(line) {
+  return /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$/.test(line);
+}
+
+function splitTableRow(line) {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function renderParagraph(lines) {
+  return `<p>${lines.map((line) => renderInlineMarkdown(line)).join("<br>")}</p>`;
+}
+
+function isSpecialBlockStart(lines, index) {
+  const line = lines[index];
+  if (!line || !line.trim()) {
+    return true;
+  }
+
+  return (
+    /^(```|~~~)/.test(line) ||
+    /^(#{1,6})\s+/.test(line) ||
+    isHorizontalRule(line) ||
+    /^>\s?/.test(line) ||
+    isListLine(line) ||
+    (index + 1 < lines.length && line.includes("|") && isTableSeparatorLine(lines[index + 1]))
+  );
+}
+
+function renderList(lines, startIndex) {
+  const ordered = isOrderedListLine(lines[startIndex]);
+  const tag = ordered ? "ol" : "ul";
+  const items = [];
+  let index = startIndex;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const markerMatch = ordered
+      ? line.match(/^\s*\d+\.\s+(.*)$/)
+      : line.match(/^\s*[-+*]\s+(.*)$/);
+
+    if (!markerMatch) {
+      break;
+    }
+
+    const itemLines = [markerMatch[1]];
+    index += 1;
+
+    while (index < lines.length) {
+      const continuationLine = lines[index];
+      if (!continuationLine.trim()) {
+        if (
+          index + 1 < lines.length &&
+          (ordered ? isOrderedListLine(lines[index + 1]) : isUnorderedListLine(lines[index + 1]))
+        ) {
+          index += 1;
+        }
+        break;
+      }
+
+      if (isListLine(continuationLine) || isSpecialBlockStart(lines, index)) {
+        break;
+      }
+
+      itemLines.push(continuationLine.trim());
+      index += 1;
+    }
+
+    items.push(`<li>${renderParagraph(itemLines)}</li>`);
+  }
+
+  return {
+    html: `<${tag}>${items.join("")}</${tag}>`,
+    nextIndex: index,
+  };
+}
+
+function renderTable(lines, startIndex) {
+  const headerCells = splitTableRow(lines[startIndex]);
+  const alignCells = splitTableRow(lines[startIndex + 1]);
+  const bodyRows = [];
+  let index = startIndex + 2;
+
+  while (index < lines.length && lines[index].trim() && lines[index].includes("|")) {
+    bodyRows.push(splitTableRow(lines[index]));
+    index += 1;
+  }
+
+  const alignments = alignCells.map((cell) => {
+    const trimmed = cell.trim();
+    if (trimmed.startsWith(":") && trimmed.endsWith(":")) {
+      return "center";
+    }
+    if (trimmed.endsWith(":")) {
+      return "right";
+    }
+    return "left";
+  });
+
+  const headerHtml = headerCells
+    .map((cell, cellIndex) => `<th style="text-align:${alignments[cellIndex] || "left"}">${renderInlineMarkdown(cell)}</th>`)
+    .join("");
+  const bodyHtml = bodyRows
+    .map((row) => {
+      const cells = headerCells.map(
+        (_, cellIndex) =>
+          `<td style="text-align:${alignments[cellIndex] || "left"}">${renderInlineMarkdown(row[cellIndex] || "")}</td>`
+      );
+      return `<tr>${cells.join("")}</tr>`;
+    })
+    .join("");
+
+  return {
+    html: `<table><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`,
+    nextIndex: index,
+  };
+}
+
+function renderMarkdown(markdownText) {
+  const text = String(markdownText || "").replace(/\r\n?/g, "\n");
+  if (!text.trim()) {
+    return "";
+  }
+
+  const lines = text.split("\n");
+  const blocks = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    const fenceMatch = line.match(/^(```|~~~)\s*([a-zA-Z0-9_-]+)?\s*$/);
+    if (fenceMatch) {
+      const fence = fenceMatch[1];
+      const language = fenceMatch[2] || "";
+      const codeLines = [];
+      index += 1;
+
+      while (index < lines.length && !new RegExp(`^${fence}\\s*$`).test(lines[index])) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+
+      if (index < lines.length) {
+        index += 1;
+      }
+
+      const languageClass = language ? ` class="language-${escapeAttribute(language)}"` : "";
+      blocks.push(`<pre><code${languageClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      blocks.push(`<h${level}>${renderInlineMarkdown(headingMatch[2].trim())}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    if (isHorizontalRule(line)) {
+      blocks.push("<hr>");
+      index += 1;
+      continue;
+    }
+
+    if (index + 1 < lines.length && line.includes("|") && isTableSeparatorLine(lines[index + 1])) {
+      const table = renderTable(lines, index);
+      blocks.push(table.html);
+      index = table.nextIndex;
+      continue;
+    }
+
+    if (/^>\s?/.test(line)) {
+      const quoteLines = [];
+      while (index < lines.length && /^>\s?/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^>\s?/, ""));
+        index += 1;
+      }
+      blocks.push(`<blockquote>${renderMarkdown(quoteLines.join("\n"))}</blockquote>`);
+      continue;
+    }
+
+    if (isListLine(line)) {
+      const list = renderList(lines, index);
+      blocks.push(list.html);
+      index = list.nextIndex;
+      continue;
+    }
+
+    const paragraphLines = [];
+    while (index < lines.length && lines[index].trim() && !isSpecialBlockStart(lines, index)) {
+      paragraphLines.push(lines[index]);
+      index += 1;
+    }
+    blocks.push(renderParagraph(paragraphLines));
+  }
+
+  return blocks.join("");
 }
 
 function parseJsonText(rawText) {
@@ -111,23 +417,38 @@ function applyPromptTemplates(templates) {
   defaultPromptTemplates = templates;
 }
 
+function renderAnswerMarkdown(markdown, scrollToBottom = false) {
+  answerMarkdown = String(markdown || "");
+  answerOutput.innerHTML = renderMarkdown(answerMarkdown);
+  if (!answerOutput.innerHTML) {
+    answerOutput.textContent = "";
+  }
+  if (scrollToBottom) {
+    answerOutput.scrollTop = answerOutput.scrollHeight;
+  }
+}
+
+function renderAnswerText(text) {
+  answerMarkdown = "";
+  answerOutput.textContent = text;
+}
+
 function resetAnswerPanels() {
-  answerOutput.textContent = "";
+  renderAnswerText("");
   responseOutput.textContent = "{}";
   renderSources([]);
   renderLlmMessages([]);
 }
 
 function applyAnswerPayload(data) {
-  answerOutput.textContent = data.answer || "";
+  renderAnswerMarkdown(data.answer || "");
   renderSources(data.sources || []);
   renderLlmMessages(data.llm_messages);
   metaText.textContent = buildMetaText(data);
 }
 
 function appendAnswerDelta(delta) {
-  answerOutput.textContent += delta;
-  answerOutput.scrollTop = answerOutput.scrollHeight;
+  renderAnswerMarkdown(answerMarkdown + String(delta || ""), true);
 }
 
 async function loadPromptTemplates() {
@@ -312,7 +633,7 @@ form.addEventListener("submit", async (event) => {
 
   if (!payload.question) {
     appendLog("Question is required.", "error");
-    answerOutput.textContent = "Question is required.";
+    renderAnswerText("Question is required.");
     return;
   }
 
@@ -358,7 +679,7 @@ form.addEventListener("submit", async (event) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Invalid form input.";
     appendLog(message, "error");
-    answerOutput.textContent = message;
+    renderAnswerText(message);
     metaText.textContent = "Fix form input";
     return;
   }
@@ -375,7 +696,7 @@ form.addEventListener("submit", async (event) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error.";
     if (!(error instanceof Error && error.keepCurrentOutput)) {
-      answerOutput.textContent = message;
+      renderAnswerText(message);
       renderSources([]);
       renderLlmMessages([]);
     }
