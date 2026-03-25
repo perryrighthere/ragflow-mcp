@@ -43,6 +43,12 @@ class FakeLLMClient:
     def extract_message_content(self, payload):
         return payload["choices"][0]["message"]["content"]
 
+    def stream_chat_completion(self, messages, *, temperature=None, max_tokens=None):
+        return iter([])
+
+    def extract_stream_delta(self, payload):
+        return ""
+
 
 class QAServiceTests(unittest.TestCase):
     def test_answer_question_only_passes_document_and_content_to_llm(self):
@@ -138,6 +144,33 @@ class QAServiceTests(unittest.TestCase):
         self.assertEqual(result["llm_messages"][0]["content"], "你是流程顾问。")
         self.assertIn("Q=流程目的是什么？", result["llm_messages"][1]["content"])
         self.assertIn("KB=[1]", result["llm_messages"][1]["content"])
+
+    def test_prepare_answer_builds_context_without_calling_llm(self):
+        ragflow_client = FakeRagflowClient(
+            {
+                "code": 0,
+                "data": {
+                    "total": 1,
+                    "chunks": [
+                        {
+                            "content": "流程目标是支撑产品完成立项。",
+                            "document_keyword": "doc-a",
+                        }
+                    ],
+                },
+            }
+        )
+        llm_client = FakeLLMClient()
+        service = KnowledgeBaseQAService(ragflow_client, llm_client)
+
+        prepared = service.prepare_answer({"question": "流程目的是什么？"})
+
+        self.assertEqual(prepared.question, "流程目的是什么？")
+        self.assertEqual(prepared.source_count, 1)
+        self.assertEqual(prepared.prompt_templates, get_default_prompt_templates())
+        self.assertEqual(prepared.llm_messages[0]["role"], "system")
+        self.assertIn("Document: doc-a", prepared.llm_messages[1]["content"])
+        self.assertEqual(llm_client.calls, [])
 
     def test_prompt_template_metadata_includes_supported_variables(self):
         metadata = get_prompt_template_metadata()

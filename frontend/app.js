@@ -62,6 +62,18 @@ function renderLlmMessages(messages) {
   renderJson(llmPromptOutput, Array.isArray(messages) ? messages : []);
 }
 
+function parseJsonText(rawText) {
+  try {
+    return rawText ? JSON.parse(rawText) : {};
+  } catch (error) {
+    return null;
+  }
+}
+
+function buildMetaText(data) {
+  return `${data?.model || "No model"} · ${data?.source_count || 0} sources`;
+}
+
 function renderSources(sources) {
   sourcesOutput.innerHTML = "";
 
@@ -99,6 +111,25 @@ function applyPromptTemplates(templates) {
   defaultPromptTemplates = templates;
 }
 
+function resetAnswerPanels() {
+  answerOutput.textContent = "";
+  responseOutput.textContent = "{}";
+  renderSources([]);
+  renderLlmMessages([]);
+}
+
+function applyAnswerPayload(data) {
+  answerOutput.textContent = data.answer || "";
+  renderSources(data.sources || []);
+  renderLlmMessages(data.llm_messages);
+  metaText.textContent = buildMetaText(data);
+}
+
+function appendAnswerDelta(delta) {
+  answerOutput.textContent += delta;
+  answerOutput.scrollTop = answerOutput.scrollHeight;
+}
+
 async function loadPromptTemplates() {
   promptStatusText.textContent = "Loading default prompt templates...";
 
@@ -134,11 +165,10 @@ async function sendRequest(payload) {
   });
 
   const rawText = await response.text();
-  let data;
-  try {
-    data = rawText ? JSON.parse(rawText) : {};
+  let data = parseJsonText(rawText);
+  if (data) {
     renderJson(responseOutput, data);
-  } catch (error) {
+  } else {
     data = null;
     responseOutput.textContent = rawText || "<empty response>";
   }
@@ -153,6 +183,112 @@ async function sendRequest(payload) {
   }
 
   return data;
+}
+
+function processStreamLine(line, state) {
+  if (!line.trim()) {
+    return;
+  }
+
+  let event;
+  try {
+    event = JSON.parse(line);
+  } catch (error) {
+    throw new Error("Streaming response contained invalid JSON.");
+  }
+
+  if (event.type === "context") {
+    renderSources(event.data?.sources || []);
+    renderLlmMessages(event.data?.llm_messages);
+    metaText.textContent = buildMetaText(event.data);
+    appendLog("Retrieved sources and started streaming the answer.", "info");
+    return;
+  }
+
+  if (event.type === "answer_delta") {
+    appendAnswerDelta(event.delta || "");
+    return;
+  }
+
+  if (event.type === "done") {
+    state.finalData = event.data || {};
+    applyAnswerPayload(state.finalData);
+    renderJson(responseOutput, { code: 0, data: state.finalData });
+    return;
+  }
+
+  if (event.type === "error") {
+    const streamError = new Error(event.message || "Streaming request failed.");
+    streamError.keepCurrentOutput = true;
+    throw streamError;
+  }
+}
+
+async function sendStreamingRequest(payload) {
+  renderJson(requestOutput, payload);
+  appendLog("Sending streaming QA request.");
+
+  const response = await fetch("/api/v1/qa/answer/stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const rawText = await response.text();
+    const data = parseJsonText(rawText);
+    if (data) {
+      renderJson(responseOutput, data);
+    } else {
+      responseOutput.textContent = rawText || "<empty response>";
+    }
+
+    const detail = data?.detail || rawText || `Request failed with status ${response.status}.`;
+    throw new Error(detail);
+  }
+
+  const state = { finalData: null };
+  const processChunkText = (chunkText, buffer) => {
+    const combined = buffer + chunkText;
+    const lines = combined.split(/\r?\n/);
+    const remainder = lines.pop() || "";
+    lines.forEach((line) => processStreamLine(line, state));
+    return remainder;
+  };
+
+  if (!response.body) {
+    let buffer = "";
+    buffer = processChunkText(await response.text(), buffer);
+    if (buffer.trim()) {
+      processStreamLine(buffer, state);
+    }
+  } else {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer = processChunkText(decoder.decode(value || new Uint8Array(), { stream: !done }), buffer);
+      if (done) {
+        break;
+      }
+    }
+
+    const tail = decoder.decode();
+    buffer = processChunkText(tail, buffer);
+    if (buffer.trim()) {
+      processStreamLine(buffer, state);
+    }
+  }
+
+  if (!state.finalData) {
+    throw new Error("Streaming response ended before completion.");
+  }
+
+  return { code: 0, data: state.finalData };
 }
 
 form.addEventListener("submit", async (event) => {
@@ -228,22 +364,22 @@ form.addEventListener("submit", async (event) => {
   }
 
   setStatus("Running...", true);
-  metaText.textContent = "Calling retrieval and LLM...";
+  metaText.textContent = "Retrieving knowledge snippets...";
+  resetAnswerPanels();
 
   try {
-    const response = await sendRequest(payload);
+    const response = await sendStreamingRequest(payload);
     const data = response.data || {};
-    answerOutput.textContent = data.answer || "";
-    renderSources(data.sources || []);
-    renderLlmMessages(data.llm_messages);
-    metaText.textContent = `${data.model || "No model"} · ${data.source_count || 0} sources`;
-    appendLog("Received QA response.", "success");
+    applyAnswerPayload(data);
+    appendLog("Received streamed QA response.", "success");
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error.";
-    answerOutput.textContent = message;
-    renderSources([]);
-    renderLlmMessages([]);
-    metaText.textContent = "Request failed";
+    if (!(error instanceof Error && error.keepCurrentOutput)) {
+      answerOutput.textContent = message;
+      renderSources([]);
+      renderLlmMessages([]);
+    }
+    metaText.textContent = error instanceof Error && error.keepCurrentOutput ? "Stream interrupted" : "Request failed";
     appendLog(message, "error");
   } finally {
     setStatus("Ready", false);

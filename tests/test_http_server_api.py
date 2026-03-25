@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from fastapi.testclient import TestClient
@@ -63,7 +64,31 @@ class FakeClient:
 class FakeLLMClient:
     def __init__(self):
         self.calls = []
+        self.stream_calls = []
         self.model = "test-qa-model"
+        self.stream_chunks = [
+            {
+                "model": self.model,
+                "choices": [
+                    {
+                        "delta": {
+                            "role": "assistant",
+                            "content": "五看包括看行业、看市场、",
+                        }
+                    }
+                ],
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "content": "看用户、看竞争、看自己。",
+                        }
+                    }
+                ],
+                "usage": {"total_tokens": 123},
+            },
+        ]
 
     def create_chat_completion(self, messages, *, temperature=None, max_tokens=None):
         self.calls.append(
@@ -88,6 +113,23 @@ class FakeLLMClient:
 
     def extract_message_content(self, payload):
         return payload["choices"][0]["message"]["content"]
+
+    def stream_chat_completion(self, messages, *, temperature=None, max_tokens=None):
+        self.stream_calls.append(
+            {
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+        )
+        return iter(list(self.stream_chunks))
+
+    def extract_stream_delta(self, payload):
+        choices = payload.get("choices") or []
+        if not choices:
+            return ""
+        delta = choices[0].get("delta") or {}
+        return delta.get("content", "")
 
 
 class FakeKnowledgePortalService:
@@ -347,6 +389,38 @@ class HttpServerApiTests(unittest.TestCase):
         self.assertEqual(payload["prompt_templates"]["system_prompt"], "你是项目顾问。")
         self.assertEqual(payload["llm_messages"][0]["content"], "你是项目顾问。")
         self.assertIn("问题=五看是什么？", payload["llm_messages"][1]["content"])
+
+    def test_qa_stream_route_returns_context_deltas_and_done_event(self):
+        self.fake_client.qa_mode = True
+
+        with self.client.stream(
+            "POST",
+            "/api/v1/qa/answer/stream",
+            json={
+                "question": "五看是什么？",
+                "dataset_ids": ["kb_123"],
+                "page_size": 3,
+            },
+        ) as response:
+            self.assertEqual(response.status_code, 200)
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        self.assertEqual([event["type"] for event in events], ["context", "answer_delta", "answer_delta", "done"])
+        self.assertEqual(
+            events[0]["data"]["sources"],
+            [
+                {
+                    "document_keyword": "IPD-2.2.3.1-002 整车产品项目任务书开发流程说明书.docx",
+                    "content": "五看包括看行业、看市场、看用户、看竞争、看自己。",
+                }
+            ],
+        )
+        self.assertEqual(events[0]["data"]["llm_messages"], self.fake_llm.stream_calls[0]["messages"])
+        self.assertEqual(events[1]["delta"], "五看包括看行业、看市场、")
+        self.assertEqual(events[2]["delta"], "看用户、看竞争、看自己。")
+        self.assertEqual(events[3]["data"]["answer"], "五看包括看行业、看市场、看用户、看竞争、看自己。")
+        self.assertEqual(events[3]["data"]["usage"], {"total_tokens": 123})
+        self.assertEqual(self.fake_client.retrieve_calls[-1]["page_size"], 3)
 
     def test_qa_route_returns_json_when_ragflow_connection_fails(self):
         def broken_retrieve(payload):

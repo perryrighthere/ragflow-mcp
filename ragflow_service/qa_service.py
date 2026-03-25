@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from .exceptions import RagflowAPIError, ValidationError
@@ -23,6 +24,8 @@ Knowledge snippets:
 {{knowledge_snippets}}
 """.strip()
 
+NO_SOURCES_ANSWER = "知识库中没有检索到可用于回答当前问题的内容，请尝试补充关键词或缩小范围。"
+
 SUPPORTED_PROMPT_VARIABLES = {
     "{{question}}": "The original user question.",
     "{{knowledge_snippets}}": "The merged retrieval snippets built from document names and content only.",
@@ -45,12 +48,56 @@ RETRIEVAL_FIELDS = {
 }
 
 
+@dataclass(frozen=True)
+class PreparedAnswer:
+    question: str
+    sources: list[dict[str, str]]
+    retrieval_total: int
+    llm_messages: list[dict[str, str]]
+    prompt_templates: dict[str, str]
+
+    @property
+    def source_count(self) -> int:
+        return len(self.sources)
+
+    def to_response(self, *, answer: str, model: str | None, usage: dict[str, Any] | None) -> dict[str, Any]:
+        return {
+            "question": self.question,
+            "answer": answer,
+            "sources": self.sources,
+            "source_count": self.source_count,
+            "retrieval_total": self.retrieval_total,
+            "llm_messages": self.llm_messages,
+            "prompt_templates": self.prompt_templates,
+            "model": model,
+            "usage": usage,
+        }
+
+
 class KnowledgeBaseQAService:
     def __init__(self, ragflow_client: RagflowClient, llm_client: OpenAICompatibleClient):
         self._ragflow_client = ragflow_client
         self._llm_client = llm_client
 
     def answer_question(self, payload: dict[str, Any]) -> dict[str, Any]:
+        prepared = self.prepare_answer(payload)
+        if not prepared.sources:
+            return prepared.to_response(answer=NO_SOURCES_ANSWER, model=None, usage=None)
+
+        llm_payload = self._llm_client.create_chat_completion(
+            prepared.llm_messages,
+            temperature=payload.get("temperature"),
+            max_tokens=payload.get("max_tokens"),
+        )
+        answer = self._llm_client.extract_message_content(llm_payload)
+
+        return prepared.to_response(
+            answer=answer,
+            model=llm_payload.get("model") or self._llm_client.model,
+            usage=llm_payload.get("usage"),
+        )
+
+    def prepare_answer(self, payload: dict[str, Any]) -> PreparedAnswer:
         question = str(payload.get("question", "")).strip()
         if not question:
             raise ValidationError("question is required")
@@ -60,39 +107,26 @@ class KnowledgeBaseQAService:
         self._raise_for_retrieval_failure(retrieval_response)
 
         sources = self._extract_sources(retrieval_response.payload)
-        if not sources:
-            return {
-                "question": question,
-                "answer": "知识库中没有检索到可用于回答当前问题的内容，请尝试补充关键词或缩小范围。",
-                "sources": [],
-                "source_count": 0,
-                "retrieval_total": self._extract_retrieval_total(retrieval_response.payload),
-                "llm_messages": [],
-                "prompt_templates": self._resolve_prompt_templates(payload),
-                "model": None,
-                "usage": None,
-            }
-
         prompt_templates = self._resolve_prompt_templates(payload)
-        llm_messages = self._build_messages(question, sources, prompt_templates=prompt_templates)
-        llm_payload = self._llm_client.create_chat_completion(
-            llm_messages,
-            temperature=payload.get("temperature"),
-            max_tokens=payload.get("max_tokens"),
-        )
-        answer = self._llm_client.extract_message_content(llm_payload)
+        if not sources:
+            return PreparedAnswer(
+                question=question,
+                sources=[],
+                retrieval_total=self._extract_retrieval_total(retrieval_response.payload),
+                llm_messages=[],
+                prompt_templates=prompt_templates,
+            )
 
-        return {
-            "question": question,
-            "answer": answer,
-            "sources": sources,
-            "source_count": len(sources),
-            "retrieval_total": self._extract_retrieval_total(retrieval_response.payload, fallback=len(sources)),
-            "llm_messages": llm_messages,
-            "prompt_templates": prompt_templates,
-            "model": llm_payload.get("model") or self._llm_client.model,
-            "usage": llm_payload.get("usage"),
-        }
+        return PreparedAnswer(
+            question=question,
+            sources=sources,
+            retrieval_total=self._extract_retrieval_total(
+                retrieval_response.payload,
+                fallback=len(sources),
+            ),
+            llm_messages=self._build_messages(question, sources, prompt_templates=prompt_templates),
+            prompt_templates=prompt_templates,
+        )
 
     def _build_retrieval_payload(self, question: str, payload: dict[str, Any]) -> dict[str, Any]:
         retrieval_payload: dict[str, Any] = {"question": question}

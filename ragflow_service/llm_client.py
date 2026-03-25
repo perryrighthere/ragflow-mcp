@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
-from typing import Any
+from typing import Any, Iterator
 from urllib import error, request
 
 from .exceptions import LLMAPIError
@@ -41,6 +41,58 @@ class OpenAICompatibleClient:
             )
         return raw
 
+    def stream_chat_completion(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+        }
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = request.Request(
+            url=f"{self.base_url}/chat/completions",
+            data=body,
+            method="POST",
+            headers={
+                "Accept": "text/event-stream",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+        )
+
+        try:
+            with request.urlopen(req, timeout=self.timeout) as response:
+                for chunk in self._iter_sse_payloads(response):
+                    if not isinstance(chunk, dict):
+                        raise LLMAPIError(
+                            "LLM stream chunk is not a JSON object.",
+                            status_code=502,
+                            payload={"raw_response": chunk},
+                        )
+                    yield chunk
+        except error.HTTPError as exc:
+            raw = exc.read()
+            payload = self._parse_payload(raw)
+            raise LLMAPIError(
+                f"LLM request failed with status {exc.code}.",
+                status_code=exc.code,
+                payload=payload if isinstance(payload, dict) else {"raw_response": payload},
+            ) from exc
+        except error.URLError as exc:
+            raise LLMAPIError(f"Unable to connect to the LLM API: {exc.reason}", status_code=502) from exc
+        except (ConnectionError, TimeoutError, OSError, socket.timeout) as exc:
+            raise LLMAPIError(f"Unable to connect to the LLM API: {exc}", status_code=502) from exc
+
     def extract_message_content(self, payload: dict[str, Any]) -> str:
         choices = payload.get("choices")
         if not isinstance(choices, list) or not choices:
@@ -61,6 +113,27 @@ class OpenAICompatibleClient:
             return content
 
         raise LLMAPIError("LLM response does not contain assistant text.", status_code=502, payload=payload)
+
+    def extract_stream_delta(self, payload: dict[str, Any]) -> str:
+        choices = payload.get("choices")
+        if not isinstance(choices, list):
+            return ""
+
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+
+            delta = choice.get("delta")
+            if isinstance(delta, dict):
+                content = self._delta_content_to_text(delta.get("content"))
+                if content:
+                    return content
+
+            content = self._delta_content_to_text(choice.get("text"))
+            if content:
+                return content
+
+        return ""
 
     def _request_json(self, path: str, payload: dict[str, Any]) -> Any:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -99,6 +172,37 @@ class OpenAICompatibleClient:
         except json.JSONDecodeError:
             return raw.decode("utf-8", errors="replace")
 
+    def _iter_sse_payloads(self, response: Any) -> Iterator[Any]:
+        data_lines: list[str] = []
+
+        while True:
+            raw_line = response.readline()
+            if not raw_line:
+                break
+
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                if not data_lines:
+                    continue
+
+                payload_text = "\n".join(data_lines)
+                data_lines = []
+                if payload_text == "[DONE]":
+                    break
+                yield self._parse_payload(payload_text.encode("utf-8"))
+                continue
+
+            if line.startswith(":"):
+                continue
+
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+
+        if data_lines:
+            payload_text = "\n".join(data_lines)
+            if payload_text != "[DONE]":
+                yield self._parse_payload(payload_text.encode("utf-8"))
+
     def _content_to_text(self, content: Any) -> str:
         if isinstance(content, str):
             return content.strip()
@@ -115,5 +219,25 @@ class OpenAICompatibleClient:
                 if item_text:
                     parts.append(item_text)
             return "\n".join(parts).strip()
+
+        return ""
+
+    def _delta_content_to_text(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    item_text = item
+                elif isinstance(item, dict):
+                    text = item.get("text")
+                    item_text = str(text) if text is not None else ""
+                else:
+                    item_text = ""
+                if item_text:
+                    parts.append(item_text)
+            return "".join(parts)
 
         return ""
