@@ -91,6 +91,10 @@ if FASTAPI_IMPORT_ERROR is None:
         max_tokens: int | None = None
         system_prompt: str | None = None
         user_prompt_template: str | None = None
+        stream: bool = Field(
+            default=False,
+            description="Whether to stream the QA response as NDJSON instead of returning the full answer at once.",
+        )
 
         model_config = ConfigDict(extra="allow")
 
@@ -267,85 +271,14 @@ def create_application(settings: Settings | None = None):
         return _response_from_upstream(upstream)
 
     @app.post("/api/v1/qa/answer", tags=["Knowledge Base QA"])
-    async def answer_question(payload: QuestionAnswerRequest) -> JSONResponse:
-        qa_service = runtime.build_qa_service()
-        answer = qa_service.answer_question(payload.model_dump(exclude_none=True))
-        return JSONResponse(status_code=200, content={"code": 0, "data": answer})
+    async def answer_question(payload: QuestionAnswerRequest) -> Response:
+        return _build_qa_answer_response(runtime, payload.model_dump(exclude_none=True))
 
     @app.post("/api/v1/qa/answer/stream", tags=["Knowledge Base QA"])
-    async def answer_question_stream(payload: QuestionAnswerRequest) -> StreamingResponse:
-        qa_service = runtime.build_qa_service()
-        llm_client = runtime.get_llm_client()
+    async def answer_question_stream(payload: QuestionAnswerRequest) -> Response:
         request_payload = payload.model_dump(exclude_none=True)
-        prepared = qa_service.prepare_answer(request_payload)
-
-        def stream() -> Any:
-            context_payload = {
-                "question": prepared.question,
-                "sources": prepared.sources,
-                "source_count": prepared.source_count,
-                "retrieval_total": prepared.retrieval_total,
-                "llm_messages": prepared.llm_messages,
-                "prompt_templates": prepared.prompt_templates,
-                "model": llm_client.model if prepared.sources else None,
-            }
-            yield _json_line({"type": "context", "data": context_payload})
-
-            if not prepared.sources:
-                yield _json_line(
-                    {
-                        "type": "done",
-                        "data": prepared.to_response(
-                            answer=NO_SOURCES_ANSWER,
-                            model=None,
-                            usage=None,
-                        ),
-                    }
-                )
-                return
-
-            answer_parts: list[str] = []
-            usage: dict[str, Any] | None = None
-            model_name = llm_client.model
-            try:
-                for chunk in llm_client.stream_chat_completion(
-                    prepared.llm_messages,
-                    temperature=request_payload.get("temperature"),
-                    max_tokens=request_payload.get("max_tokens"),
-                ):
-                    chunk_model = chunk.get("model")
-                    if isinstance(chunk_model, str) and chunk_model:
-                        model_name = chunk_model
-
-                    chunk_usage = chunk.get("usage")
-                    if isinstance(chunk_usage, dict):
-                        usage = chunk_usage
-
-                    delta = llm_client.extract_stream_delta(chunk)
-                    if not delta:
-                        continue
-
-                    answer_parts.append(delta)
-                    yield _json_line({"type": "answer_delta", "delta": delta})
-
-                answer = "".join(answer_parts).strip()
-                if not answer:
-                    raise LLMAPIError("LLM response does not contain assistant text.", status_code=502)
-
-                yield _json_line(
-                    {
-                        "type": "done",
-                        "data": prepared.to_response(answer=answer, model=model_name, usage=usage),
-                    }
-                )
-            except Exception as exc:
-                yield _json_line({"type": "error", "message": str(exc) or "Unexpected streaming error."})
-
-        return StreamingResponse(
-            stream(),
-            media_type="application/x-ndjson",
-            headers={"Cache-Control": "no-cache"},
-        )
+        request_payload["stream"] = True
+        return _build_qa_answer_response(runtime, request_payload)
 
     @app.get("/api/v1/qa/prompt-templates", tags=["Knowledge Base QA"])
     async def get_prompt_templates() -> JSONResponse:
@@ -428,6 +361,91 @@ def serve(settings: Settings | None = None, *, reload: bool = False) -> None:
     settings = settings or Settings.from_env()
     app = create_application(settings)
     uvicorn.run(app, host=settings.server_host, port=settings.server_port, reload=reload)
+
+
+def _build_qa_answer_response(runtime: ServiceRuntime, request_payload: dict[str, Any]) -> Response:
+    request_payload = dict(request_payload)
+    stream = bool(request_payload.pop("stream", False))
+    if stream:
+        return _build_qa_streaming_response(runtime, request_payload)
+
+    qa_service = runtime.build_qa_service()
+    answer = qa_service.answer_question(request_payload)
+    return JSONResponse(status_code=200, content={"code": 0, "data": answer})
+
+
+def _build_qa_streaming_response(runtime: ServiceRuntime, request_payload: dict[str, Any]) -> StreamingResponse:
+    qa_service = runtime.build_qa_service()
+    llm_client = runtime.get_llm_client()
+    prepared = qa_service.prepare_answer(request_payload)
+
+    def stream() -> Any:
+        context_payload = {
+            "question": prepared.question,
+            "sources": prepared.sources,
+            "source_count": prepared.source_count,
+            "retrieval_total": prepared.retrieval_total,
+            "llm_messages": prepared.llm_messages,
+            "prompt_templates": prepared.prompt_templates,
+            "model": llm_client.model if prepared.sources else None,
+        }
+        yield _json_line({"type": "context", "data": context_payload})
+
+        if not prepared.sources:
+            yield _json_line(
+                {
+                    "type": "done",
+                    "data": prepared.to_response(
+                        answer=NO_SOURCES_ANSWER,
+                        model=None,
+                        usage=None,
+                    ),
+                }
+            )
+            return
+
+        answer_parts: list[str] = []
+        usage: dict[str, Any] | None = None
+        model_name = llm_client.model
+        try:
+            for chunk in llm_client.stream_chat_completion(
+                prepared.llm_messages,
+                temperature=request_payload.get("temperature"),
+                max_tokens=request_payload.get("max_tokens"),
+            ):
+                chunk_model = chunk.get("model")
+                if isinstance(chunk_model, str) and chunk_model:
+                    model_name = chunk_model
+
+                chunk_usage = chunk.get("usage")
+                if isinstance(chunk_usage, dict):
+                    usage = chunk_usage
+
+                delta = llm_client.extract_stream_delta(chunk)
+                if not delta:
+                    continue
+
+                answer_parts.append(delta)
+                yield _json_line({"type": "answer_delta", "delta": delta})
+
+            answer = "".join(answer_parts).strip()
+            if not answer:
+                raise LLMAPIError("LLM response does not contain assistant text.", status_code=502)
+
+            yield _json_line(
+                {
+                    "type": "done",
+                    "data": prepared.to_response(answer=answer, model=model_name, usage=usage),
+                }
+            )
+        except Exception as exc:
+            yield _json_line({"type": "error", "message": str(exc) or "Unexpected streaming error."})
+
+    return StreamingResponse(
+        stream(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 def _response_from_upstream(upstream: UpstreamResponse) -> Response:

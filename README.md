@@ -3,7 +3,7 @@
 一个轻量后端，提供：
 
 - RAGFlow 原始代理接口
-- 知识库问答接口 `POST /api/v1/qa/answer`
+- 知识库问答接口 `POST /api/v1/qa/answer`（支持 `stream` 参数切换流式 / 非流式）
 - 知识门户文档同步下载接口 `POST /api/v1/knowledge-portal/documents/sync`
 - 知识门户文档导入 RAGFlow 接口 `POST /api/v1/knowledge-portal/documents/import`
 - 前端控制台 `/`
@@ -93,12 +93,58 @@ python -m unittest tests.test_config tests.test_ragflow_client tests.test_http_s
 - `GET /v1/system/healthz`
 - `POST /api/v1/retrieval`
 - `POST /api/v1/qa/answer`
+- `POST /api/v1/qa/answer/stream`（兼容旧流式调用）
 - `POST /api/v1/knowledge-portal/documents/sync`
 - `POST /api/v1/knowledge-portal/documents/import`
 - `GET /api/v1/datasets/{dataset_id}/documents`
 - `POST /api/v1/datasets/{dataset_id}/documents`
 - `PUT /api/v1/datasets/{dataset_id}/documents/{document_id}`
 - `POST /api/v1/datasets/{dataset_id}/chunks`
+
+## 知识库问答接口
+
+接口：`POST /api/v1/qa/answer`
+
+行为：
+
+- 服务端会先调用 RAGFlow `POST /api/v1/retrieval` 检索 chunks
+- 再将检索出的文档名和正文内容组装为提示词，调用配置好的 OpenAI 兼容 LLM 回答问题
+- 可通过 `stream` 参数选择一次性返回，或按 `NDJSON` 流式返回
+
+一次性返回示例：
+
+```bash
+curl --request POST \
+  --url http://127.0.0.1:8080/api/v1/qa/answer \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "question": "五看六定是什么？",
+    "dataset_ids": ["kb_123"],
+    "page_size": 6,
+    "stream": false
+  }'
+```
+
+流式返回示例：
+
+```bash
+curl -N --request POST \
+  --url http://127.0.0.1:8080/api/v1/qa/answer \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "question": "五看六定是什么？",
+    "dataset_ids": ["kb_123"],
+    "page_size": 6,
+    "stream": true
+  }'
+```
+
+说明：
+
+- 当 `stream=false` 或不传时，返回标准 JSON：`{"code":0,"data":{...}}`
+- 当 `stream=true` 时，返回 `application/x-ndjson`，事件类型包括 `context`、`answer_delta`、`done`、`error`
+- 旧接口 `POST /api/v1/qa/answer/stream` 仍可继续使用，行为与 `POST /api/v1/qa/answer` 携带 `stream=true` 一致
+- 常用可选参数还包括 `document_ids`、`similarity_threshold`、`vector_similarity_weight`、`top_k`、`metadata_condition`、`temperature`、`max_tokens`
 
 ## 知识门户文档同步
 
