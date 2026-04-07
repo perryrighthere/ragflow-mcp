@@ -473,39 +473,6 @@ async function loadPromptTemplates() {
   }
 }
 
-async function sendRequest(payload) {
-  renderJson(requestOutput, payload);
-  appendLog("Sending QA request.");
-
-  const response = await fetch("/api/v1/qa/answer", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-
-  const rawText = await response.text();
-  let data = parseJsonText(rawText);
-  if (data) {
-    renderJson(responseOutput, data);
-  } else {
-    data = null;
-    responseOutput.textContent = rawText || "<empty response>";
-  }
-
-  if (!response.ok) {
-    const detail = data?.detail || rawText || `Request failed with status ${response.status}.`;
-    throw new Error(detail);
-  }
-
-  if (!data) {
-    throw new Error("Service returned a non-JSON success response.");
-  }
-
-  return data;
-}
-
 function processStreamLine(line, state) {
   if (!line.trim()) {
     return;

@@ -91,10 +91,6 @@ if FASTAPI_IMPORT_ERROR is None:
         max_tokens: int | None = None
         system_prompt: str | None = None
         user_prompt_template: str | None = None
-        stream: bool = Field(
-            default=False,
-            description="Whether to stream the QA response as NDJSON instead of returning the full answer at once.",
-        )
 
         model_config = ConfigDict(extra="allow")
 
@@ -270,15 +266,11 @@ def create_application(settings: Settings | None = None):
         upstream = client.retrieve_chunks(payload.model_dump(exclude_none=True))
         return _response_from_upstream(upstream)
 
-    @app.post("/api/v1/qa/answer", tags=["Knowledge Base QA"])
-    async def answer_question(payload: QuestionAnswerRequest) -> Response:
-        return _build_qa_answer_response(runtime, payload.model_dump(exclude_none=True))
-
     @app.post("/api/v1/qa/answer/stream", tags=["Knowledge Base QA"])
-    async def answer_question_stream(payload: QuestionAnswerRequest) -> Response:
+    async def answer_question_stream(payload: QuestionAnswerRequest) -> StreamingResponse:
         request_payload = payload.model_dump(exclude_none=True)
-        request_payload["stream"] = True
-        return _build_qa_answer_response(runtime, request_payload)
+        request_payload.pop("stream", None)
+        return _build_qa_streaming_response(runtime, request_payload)
 
     @app.get("/api/v1/qa/prompt-templates", tags=["Knowledge Base QA"])
     async def get_prompt_templates() -> JSONResponse:
@@ -361,17 +353,6 @@ def serve(settings: Settings | None = None, *, reload: bool = False) -> None:
     settings = settings or Settings.from_env()
     app = create_application(settings)
     uvicorn.run(app, host=settings.server_host, port=settings.server_port, reload=reload)
-
-
-def _build_qa_answer_response(runtime: ServiceRuntime, request_payload: dict[str, Any]) -> Response:
-    request_payload = dict(request_payload)
-    stream = bool(request_payload.pop("stream", False))
-    if stream:
-        return _build_qa_streaming_response(runtime, request_payload)
-
-    qa_service = runtime.build_qa_service()
-    answer = qa_service.answer_question(request_payload)
-    return JSONResponse(status_code=200, content={"code": 0, "data": answer})
 
 
 def _build_qa_streaming_response(runtime: ServiceRuntime, request_payload: dict[str, Any]) -> StreamingResponse:

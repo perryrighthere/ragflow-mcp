@@ -3,7 +3,7 @@
 一个轻量后端，提供：
 
 - RAGFlow 原始代理接口
-- 知识库问答接口 `POST /api/v1/qa/answer`（支持 `stream` 参数切换流式 / 非流式）
+- 知识库问答接口 `POST /api/v1/qa/answer/stream`
 - 知识门户文档同步下载接口 `POST /api/v1/knowledge-portal/documents/sync`
 - 知识门户文档导入 RAGFlow 接口 `POST /api/v1/knowledge-portal/documents/import`
 - 前端控制台 `/`
@@ -64,6 +64,50 @@ python main.py request POST /api/v1/retrieval --json '{"question":"五看六定�
 python -m unittest tests.test_config tests.test_ragflow_client tests.test_http_server_api tests.test_knowledge_portal_service tests.test_qa_service tests.test_main tests.test_document_service
 ```
 
+## Docker
+
+构建镜像：
+
+```bash
+docker build -t ragflow-mcp:latest .
+```
+
+准备容器环境变量：
+
+```bash
+cp .env.docker.example .env.docker
+```
+
+然后按你的实际环境修改 `.env.docker` 中的配置。
+
+说明：
+
+- 如果 RAGFlow 或 LLM 服务运行在宿主机上，Docker 内不能使用 `127.0.0.1` 指向宿主机
+- 可以将 `RAGFLOW_BASE_URL`、`LLM_BASE_URL` 写成 `http://host.docker.internal:<port>`
+- Linux 上运行 `docker run` 时，建议同时加上 `--add-host=host.docker.internal:host-gateway`
+
+启动容器：
+
+```bash
+docker run --rm \
+  --name ragflow-mcp \
+  --publish 8080:8080 \
+  --env-file .env.docker \
+  --add-host=host.docker.internal:host-gateway \
+  ragflow-mcp:latest
+```
+
+启动后访问：
+
+- `http://127.0.0.1:8080/`
+- `http://127.0.0.1:8080/docs`
+
+补充说明：
+
+- 镜像默认启动命令为 `python main.py serve`
+- 即使暂时未配置 RAGFlow 或 LLM，容器也可以启动，前端和文档页仍可访问；对应接口会返回 `503`
+- 如果你希望改宿主机端口，可调整 `--publish 18080:8080`
+
 ## 环境变量
 
 支持系统环境变量和仓库根目录 `.env`。
@@ -92,8 +136,7 @@ python -m unittest tests.test_config tests.test_ragflow_client tests.test_http_s
 
 - `GET /v1/system/healthz`
 - `POST /api/v1/retrieval`
-- `POST /api/v1/qa/answer`
-- `POST /api/v1/qa/answer/stream`（兼容旧流式调用）
+- `POST /api/v1/qa/answer/stream`
 - `POST /api/v1/knowledge-portal/documents/sync`
 - `POST /api/v1/knowledge-portal/documents/import`
 - `GET /api/v1/datasets/{dataset_id}/documents`
@@ -103,47 +146,30 @@ python -m unittest tests.test_config tests.test_ragflow_client tests.test_http_s
 
 ## 知识库问答接口
 
-接口：`POST /api/v1/qa/answer`
+接口：`POST /api/v1/qa/answer/stream`
 
 行为：
 
 - 服务端会先调用 RAGFlow `POST /api/v1/retrieval` 检索 chunks
 - 再将检索出的文档名和正文内容组装为提示词，调用配置好的 OpenAI 兼容 LLM 回答问题
-- 可通过 `stream` 参数选择一次性返回，或按 `NDJSON` 流式返回
+- 接口始终按 `NDJSON` 方式流式返回
 
-一次性返回示例：
-
-```bash
-curl --request POST \
-  --url http://127.0.0.1:8080/api/v1/qa/answer \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "question": "五看六定是什么？",
-    "dataset_ids": ["kb_123"],
-    "page_size": 6,
-    "stream": false
-  }'
-```
-
-流式返回示例：
+请求示例：
 
 ```bash
 curl -N --request POST \
-  --url http://127.0.0.1:8080/api/v1/qa/answer \
+  --url http://127.0.0.1:8080/api/v1/qa/answer/stream \
   --header 'Content-Type: application/json' \
   --data '{
     "question": "五看六定是什么？",
     "dataset_ids": ["kb_123"],
-    "page_size": 6,
-    "stream": true
+    "page_size": 6
   }'
 ```
 
 说明：
 
-- 当 `stream=false` 或不传时，返回标准 JSON：`{"code":0,"data":{...}}`
-- 当 `stream=true` 时，返回 `application/x-ndjson`，事件类型包括 `context`、`answer_delta`、`done`、`error`
-- 旧接口 `POST /api/v1/qa/answer/stream` 仍可继续使用，行为与 `POST /api/v1/qa/answer` 携带 `stream=true` 一致
+- 返回 `application/x-ndjson`，事件类型包括 `context`、`answer_delta`、`done`、`error`
 - 常用可选参数还包括 `document_ids`、`similarity_threshold`、`vector_similarity_weight`、`top_k`、`metadata_condition`、`temperature`、`max_tokens`
 
 ## 知识门户文档同步

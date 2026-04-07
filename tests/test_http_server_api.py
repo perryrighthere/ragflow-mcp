@@ -342,52 +342,32 @@ class HttpServerApiTests(unittest.TestCase):
         self.assertEqual(self.fake_client.upload_calls[0][0], "kb_123")
         self.assertEqual(self.fake_client.upload_calls[0][1][0].filename, "a.txt")
 
-    def test_qa_route_returns_answer_and_trimmed_sources(self):
-        self.fake_client.qa_mode = True
+    def test_qa_answer_route_is_not_available(self):
         response = self.client.post(
             "/api/v1/qa/answer",
             json={
                 "question": "五看是什么？",
-                "dataset_ids": ["kb_123"],
-                "page_size": 3,
-                "stream": False,
             },
         )
 
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()["data"]
-        self.assertEqual(payload["answer"], "五看包括看行业、看市场、看用户、看竞争、看自己。")
-        self.assertEqual(
-            payload["sources"],
-            [
-                {
-                    "document_keyword": "IPD-2.2.3.1-002 整车产品项目任务书开发流程说明书.docx",
-                    "content": "五看包括看行业、看市场、看用户、看竞争、看自己。",
-                }
-            ],
-        )
-        self.assertEqual(payload["llm_messages"], self.fake_llm.calls[0]["messages"])
-        self.assertEqual(payload["prompt_templates"], get_default_prompt_templates())
-        self.assertEqual(self.fake_client.retrieve_calls[-1]["page_size"], 3)
-        self.assertNotIn("stream", self.fake_client.retrieve_calls[-1])
-        llm_prompt = self.fake_llm.calls[0]["messages"][1]["content"]
-        self.assertIn("Document: IPD-2.2.3.1-002 整车产品项目任务书开发流程说明书.docx", llm_prompt)
-        self.assertIn("Content:\n五看包括看行业、看市场、看用户、看竞争、看自己。", llm_prompt)
-        self.assertNotIn("similarity", llm_prompt)
+        self.assertEqual(response.status_code, 404)
 
-    def test_qa_route_accepts_prompt_overrides(self):
+    def test_qa_stream_route_accepts_prompt_overrides(self):
         self.fake_client.qa_mode = True
-        response = self.client.post(
-            "/api/v1/qa/answer",
+
+        with self.client.stream(
+            "POST",
+            "/api/v1/qa/answer/stream",
             json={
                 "question": "五看是什么？",
                 "system_prompt": "你是项目顾问。",
                 "user_prompt_template": "问题={{question}}\n资料={{knowledge_snippets}}",
             },
-        )
+        ) as response:
+            self.assertEqual(response.status_code, 200)
+            events = [json.loads(line) for line in response.iter_lines() if line]
 
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()["data"]
+        payload = events[-1]["data"]
         self.assertEqual(payload["prompt_templates"]["system_prompt"], "你是项目顾问。")
         self.assertEqual(payload["llm_messages"][0]["content"], "你是项目顾问。")
         self.assertIn("问题=五看是什么？", payload["llm_messages"][1]["content"])
@@ -425,36 +405,13 @@ class HttpServerApiTests(unittest.TestCase):
         self.assertEqual(self.fake_client.retrieve_calls[-1]["page_size"], 3)
         self.assertNotIn("stream", self.fake_client.retrieve_calls[-1])
 
-    def test_qa_route_with_stream_flag_returns_context_deltas_and_done_event(self):
-        self.fake_client.qa_mode = True
-
-        with self.client.stream(
-            "POST",
-            "/api/v1/qa/answer",
-            json={
-                "question": "五看是什么？",
-                "dataset_ids": ["kb_123"],
-                "page_size": 3,
-                "stream": True,
-            },
-        ) as response:
-            self.assertEqual(response.status_code, 200)
-            events = [json.loads(line) for line in response.iter_lines() if line]
-
-        self.assertEqual([event["type"] for event in events], ["context", "answer_delta", "answer_delta", "done"])
-        self.assertEqual(events[0]["data"]["sources"][0]["document_keyword"], "IPD-2.2.3.1-002 整车产品项目任务书开发流程说明书.docx")
-        self.assertEqual(events[3]["data"]["answer"], "五看包括看行业、看市场、看用户、看竞争、看自己。")
-        self.assertEqual(self.fake_llm.calls, [])
-        self.assertEqual(events[0]["data"]["llm_messages"], self.fake_llm.stream_calls[-1]["messages"])
-        self.assertNotIn("stream", self.fake_client.retrieve_calls[-1])
-
-    def test_qa_route_returns_json_when_ragflow_connection_fails(self):
+    def test_qa_stream_route_returns_json_when_ragflow_connection_fails(self):
         def broken_retrieve(payload):
             raise RagflowAPIError("Unable to connect to RAGFlow: Connection reset by peer", status_code=502)
 
         self.fake_client.retrieve_chunks = broken_retrieve
         response = self.client.post(
-            "/api/v1/qa/answer",
+            "/api/v1/qa/answer/stream",
             json={
                 "question": "五看是什么？",
             },
