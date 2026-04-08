@@ -1,4 +1,5 @@
-FROM python:3.11-slim
+ARG PYTHON_BASE_IMAGE=repo.seres.cn/python:3.11-slim
+FROM ${PYTHON_BASE_IMAGE}
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -11,7 +12,8 @@ WORKDIR /app
 RUN useradd --create-home --shell /bin/bash appuser
 
 COPY requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip config set global.index-url https://repo.seres.cn/nexus/repository/pypi/simple/ \
+  && pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=appuser:appuser main.py ./main.py
 COPY --chown=appuser:appuser ragflow_service ./ragflow_service
