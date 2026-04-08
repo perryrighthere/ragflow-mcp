@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ragflow-knowledge-portal
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    env_instance: "${ENV_INSTANCE}"
+    project: "${PROJECT_NAME}"
+  labels:
+    app.kubernetes.io/component: ragflow-knowledge-portal
+    app.kubernetes.io/instance: ragflow-knowledge-portal
+    app.kubernetes.io/name: ragflow-knowledge-portal
+    service: ragflow-knowledge-portal
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: ragflow-knowledge-portal.cloud-prod.seres.cn
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ragflow-knowledge-portal
+                port:
+                  name: http

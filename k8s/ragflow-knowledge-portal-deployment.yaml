@@ -2,14 +2,15 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ragflow-knowledge-portal
+  annotations:
+    app.kubernetes.io/managed-by: "${MANAGED_BY}"
+    app.kubernetes.io/version: "v${APP_VERSION}"
+    env_instance: "${ENV_INSTANCE}"
+    project: "${PROJECT_NAME}"
   labels:
     app.kubernetes.io/component: ragflow-knowledge-portal
     app.kubernetes.io/instance: ragflow-knowledge-portal
-    app.kubernetes.io/managed-by: "${MANAGED_BY}"
     app.kubernetes.io/name: ragflow-knowledge-portal
-    app.kubernetes.io/version: "${APP_VERSION}"
-    env_instance: "${ENV_INSTANCE}"
-    project: "${PROJECT_NAME}"
     service: ragflow-knowledge-portal
     workload: "true"
 spec:
@@ -21,14 +22,15 @@ spec:
       app.kubernetes.io/name: ragflow-knowledge-portal
   template:
     metadata:
+      annotations:
+        app.kubernetes.io/managed-by: "${MANAGED_BY}"
+        app.kubernetes.io/version: "v${APP_VERSION}"
+        env_instance: "${ENV_INSTANCE}"
+        project: "${PROJECT_NAME}"
       labels:
         app.kubernetes.io/component: ragflow-knowledge-portal
         app.kubernetes.io/instance: ragflow-knowledge-portal
-        app.kubernetes.io/managed-by: "${MANAGED_BY}"
         app.kubernetes.io/name: ragflow-knowledge-portal
-        app.kubernetes.io/version: "${APP_VERSION}"
-        env_instance: "${ENV_INSTANCE}"
-        project: "${PROJECT_NAME}"
         service: ragflow-knowledge-portal
     spec:
       affinity:
