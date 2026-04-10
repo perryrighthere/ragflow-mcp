@@ -10,10 +10,12 @@ const responseOutput = document.getElementById("response-output");
 const llmPromptOutput = document.getElementById("llm-prompt-output");
 const sourcesOutput = document.getElementById("sources-output");
 const logOutput = document.getElementById("log-output");
+const datasetIdsInput = document.getElementById("dataset_ids");
 const systemPromptInput = document.getElementById("system_prompt");
 const userPromptTemplateInput = document.getElementById("user_prompt_template");
 
 let defaultPromptTemplates = null;
+let currentPromptMode = "direct";
 let answerMarkdown = "";
 
 function parseCsv(value) {
@@ -377,7 +379,15 @@ function parseJsonText(rawText) {
 }
 
 function buildMetaText(data) {
-  return `${data?.model || "No model"} · ${data?.source_count || 0} sources`;
+  const model = data?.model || "No model";
+  const sourceCount = data?.source_count || 0;
+  if (sourceCount > 0) {
+    return `${model} · ${sourceCount} sources`;
+  }
+  if (Array.isArray(data?.llm_messages) && data.llm_messages.length > 0) {
+    return `${model} · direct LLM`;
+  }
+  return `${model} · 0 sources`;
 }
 
 function renderSources(sources) {
@@ -407,6 +417,39 @@ function renderSources(sources) {
   });
 }
 
+function hasDatasetIds() {
+  return parseCsv(datasetIdsInput.value || "").length > 0;
+}
+
+function getPromptMode() {
+  return hasDatasetIds() ? "retrieval" : "direct";
+}
+
+function getPromptValues() {
+  return {
+    system_prompt: systemPromptInput.value || "",
+    user_prompt_template: userPromptTemplateInput.value || "",
+  };
+}
+
+function arePromptTemplatesEqual(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+
+  return (
+    String(left.system_prompt || "") === String(right.system_prompt || "") &&
+    String(left.user_prompt_template || "") === String(right.user_prompt_template || "")
+  );
+}
+
+function getActiveDefaultPromptTemplates() {
+  if (!defaultPromptTemplates) {
+    return null;
+  }
+  return defaultPromptTemplates[getPromptMode()] || defaultPromptTemplates.retrieval || null;
+}
+
 function applyPromptTemplates(templates) {
   if (!templates) {
     return;
@@ -414,7 +457,6 @@ function applyPromptTemplates(templates) {
 
   systemPromptInput.value = templates.system_prompt || "";
   userPromptTemplateInput.value = templates.user_prompt_template || "";
-  defaultPromptTemplates = templates;
 }
 
 function renderAnswerMarkdown(markdown, scrollToBottom = false) {
@@ -463,8 +505,20 @@ async function loadPromptTemplates() {
       throw new Error(payload.detail || "Unable to load prompt templates.");
     }
 
-    applyPromptTemplates(payload.data || {});
-    promptStatusText.textContent = "Using backend default prompt templates.";
+    const retrievalDefaults = {
+      system_prompt: payload.data?.system_prompt || "",
+      user_prompt_template: payload.data?.user_prompt_template || "",
+    };
+    defaultPromptTemplates = {
+      retrieval: retrievalDefaults,
+      direct: payload.data?.direct_answer_defaults || retrievalDefaults,
+    };
+    currentPromptMode = getPromptMode();
+    applyPromptTemplates(getActiveDefaultPromptTemplates());
+    promptStatusText.textContent =
+      currentPromptMode === "retrieval"
+        ? "Using knowledge-base prompt defaults."
+        : "Using direct-LLM prompt defaults.";
     appendLog("Loaded prompt templates.", "success");
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to load prompt templates.";
@@ -489,7 +543,7 @@ function processStreamLine(line, state) {
     renderSources(event.data?.sources || []);
     renderLlmMessages(event.data?.llm_messages);
     metaText.textContent = buildMetaText(event.data);
-    appendLog("Retrieved sources and started streaming the answer.", "info");
+    appendLog("Prepared the answer context and started streaming.", "info");
     return;
   }
 
@@ -652,7 +706,7 @@ form.addEventListener("submit", async (event) => {
   }
 
   setStatus("Running...", true);
-  metaText.textContent = "Retrieving knowledge snippets...";
+  metaText.textContent = datasetIds.length > 0 ? "Retrieving knowledge snippets..." : "Sending question to the LLM...";
   resetAnswerPanels();
 
   try {
@@ -675,15 +729,46 @@ form.addEventListener("submit", async (event) => {
 });
 
 resetPromptsButton.addEventListener("click", () => {
-  if (!defaultPromptTemplates) {
+  const activeTemplates = getActiveDefaultPromptTemplates();
+  if (!activeTemplates) {
     promptStatusText.textContent = "Default prompt templates are not loaded yet.";
     appendLog("Default prompt templates are not loaded yet.", "info");
     return;
   }
 
-  applyPromptTemplates(defaultPromptTemplates);
+  applyPromptTemplates(activeTemplates);
   promptStatusText.textContent = "Prompt templates reset to backend defaults.";
   appendLog("Prompt templates reset to defaults.", "success");
+});
+
+datasetIdsInput.addEventListener("input", () => {
+  if (!defaultPromptTemplates) {
+    return;
+  }
+
+  const nextPromptMode = getPromptMode();
+  if (nextPromptMode === currentPromptMode) {
+    return;
+  }
+
+  const currentValues = getPromptValues();
+  const previousDefaults = defaultPromptTemplates[currentPromptMode];
+  currentPromptMode = nextPromptMode;
+
+  if (arePromptTemplatesEqual(currentValues, previousDefaults)) {
+    applyPromptTemplates(getActiveDefaultPromptTemplates());
+    promptStatusText.textContent =
+      currentPromptMode === "retrieval"
+        ? "Switched to knowledge-base prompt defaults."
+        : "Switched to direct-LLM prompt defaults.";
+    appendLog("Prompt defaults updated to match the current QA mode.", "info");
+    return;
+  }
+
+  promptStatusText.textContent =
+    currentPromptMode === "retrieval"
+      ? "Dataset IDs detected. Keeping your custom prompt edits."
+      : "Direct LLM mode detected. Keeping your custom prompt edits.";
 });
 
 loadPromptTemplates();

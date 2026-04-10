@@ -168,8 +168,9 @@ class ServiceRuntime:
             )
         return self._llm_client
 
-    def build_qa_service(self) -> KnowledgeBaseQAService:
-        return KnowledgeBaseQAService(self.get_client(), self.get_llm_client())
+    def build_qa_service(self, *, use_retrieval: bool) -> KnowledgeBaseQAService:
+        ragflow_client = self.get_client() if use_retrieval else None
+        return KnowledgeBaseQAService(ragflow_client, self.get_llm_client())
 
     def build_document_service(self) -> RagflowDocumentService:
         return RagflowDocumentService(self.get_client(), self.get_knowledge_portal_service())
@@ -356,7 +357,8 @@ def serve(settings: Settings | None = None, *, reload: bool = False) -> None:
 
 
 def _build_qa_streaming_response(runtime: ServiceRuntime, request_payload: dict[str, Any]) -> StreamingResponse:
-    qa_service = runtime.build_qa_service()
+    use_retrieval = "dataset_ids" in request_payload and request_payload.get("dataset_ids") is not None
+    qa_service = runtime.build_qa_service(use_retrieval=use_retrieval)
     llm_client = runtime.get_llm_client()
     prepared = qa_service.prepare_answer(request_payload)
 
@@ -368,11 +370,11 @@ def _build_qa_streaming_response(runtime: ServiceRuntime, request_payload: dict[
             "retrieval_total": prepared.retrieval_total,
             "llm_messages": prepared.llm_messages,
             "prompt_templates": prepared.prompt_templates,
-            "model": llm_client.model if prepared.sources else None,
+            "model": llm_client.model if prepared.llm_messages else None,
         }
         yield _json_line({"type": "context", "data": context_payload})
 
-        if not prepared.sources:
+        if prepared.uses_retrieval and not prepared.sources:
             yield _json_line(
                 {
                     "type": "done",

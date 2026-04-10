@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .exceptions import RagflowAPIError, ValidationError
+from .exceptions import ConfigError, RagflowAPIError, ValidationError
 from .llm_client import OpenAICompatibleClient
 from .ragflow_client import RagflowClient, UpstreamResponse
 
@@ -23,6 +23,15 @@ Question:
 Knowledge snippets:
 {{knowledge_snippets}}
 """.strip()
+
+DEFAULT_DIRECT_SYSTEM_PROMPT = """
+你是一个问答助手。
+请直接、准确地回答用户问题。
+如果问题存在不确定性，请明确说明你的判断依据或不确定点。
+请使用与用户问题相同的语言作答。
+""".strip()
+
+DEFAULT_DIRECT_USER_PROMPT_TEMPLATE = "{{question}}".strip()
 
 NO_SOURCES_ANSWER = "知识库中没有检索到可用于回答当前问题的内容，请尝试补充关键词或缩小范围。"
 
@@ -55,6 +64,7 @@ class PreparedAnswer:
     retrieval_total: int
     llm_messages: list[dict[str, str]]
     prompt_templates: dict[str, str]
+    uses_retrieval: bool
 
     @property
     def source_count(self) -> int:
@@ -75,13 +85,13 @@ class PreparedAnswer:
 
 
 class KnowledgeBaseQAService:
-    def __init__(self, ragflow_client: RagflowClient, llm_client: OpenAICompatibleClient):
+    def __init__(self, ragflow_client: RagflowClient | None, llm_client: OpenAICompatibleClient):
         self._ragflow_client = ragflow_client
         self._llm_client = llm_client
 
     def answer_question(self, payload: dict[str, Any]) -> dict[str, Any]:
         prepared = self.prepare_answer(payload)
-        if not prepared.sources:
+        if prepared.uses_retrieval and not prepared.sources:
             return prepared.to_response(answer=NO_SOURCES_ANSWER, model=None, usage=None)
 
         llm_payload = self._llm_client.create_chat_completion(
@@ -102,12 +112,31 @@ class KnowledgeBaseQAService:
         if not question:
             raise ValidationError("question is required")
 
+        uses_retrieval = self._should_use_retrieval(payload)
+        prompt_templates = self._resolve_prompt_templates(payload, uses_retrieval=uses_retrieval)
+        if not uses_retrieval:
+            return PreparedAnswer(
+                question=question,
+                sources=[],
+                retrieval_total=0,
+                llm_messages=self._build_messages(
+                    question,
+                    [],
+                    prompt_templates=prompt_templates,
+                ),
+                prompt_templates=prompt_templates,
+                uses_retrieval=False,
+            )
+
         retrieval_payload = self._build_retrieval_payload(question, payload)
+        if self._ragflow_client is None:
+            raise ConfigError(
+                "RAGFlow is not configured. Set RAGFLOW_BASE_URL and RAGFLOW_API_KEY in the environment or .env first."
+            )
         retrieval_response = self._ragflow_client.retrieve_chunks(retrieval_payload)
         self._raise_for_retrieval_failure(retrieval_response)
 
         sources = self._extract_sources(retrieval_response.payload)
-        prompt_templates = self._resolve_prompt_templates(payload)
         if not sources:
             return PreparedAnswer(
                 question=question,
@@ -115,6 +144,7 @@ class KnowledgeBaseQAService:
                 retrieval_total=self._extract_retrieval_total(retrieval_response.payload),
                 llm_messages=[],
                 prompt_templates=prompt_templates,
+                uses_retrieval=True,
             )
 
         return PreparedAnswer(
@@ -126,7 +156,11 @@ class KnowledgeBaseQAService:
             ),
             llm_messages=self._build_messages(question, sources, prompt_templates=prompt_templates),
             prompt_templates=prompt_templates,
+            uses_retrieval=True,
         )
+
+    def _should_use_retrieval(self, payload: dict[str, Any]) -> bool:
+        return "dataset_ids" in payload and payload.get("dataset_ids") is not None
 
     def _build_retrieval_payload(self, question: str, payload: dict[str, Any]) -> dict[str, Any]:
         retrieval_payload: dict[str, Any] = {"question": question}
@@ -201,20 +235,19 @@ class KnowledgeBaseQAService:
             snippets.append("\n".join(lines))
         snippets_text = "\n\n".join(snippets)
 
+        user_message = self._render_user_prompt(
+            prompt_templates["user_prompt_template"],
+            question=question,
+            knowledge_snippets=snippets_text,
+        )
+
         return [
             {"role": "system", "content": prompt_templates["system_prompt"]},
-            {
-                "role": "user",
-                "content": self._render_user_prompt(
-                    prompt_templates["user_prompt_template"],
-                    question=question,
-                    knowledge_snippets=snippets_text,
-                ),
-            },
+            {"role": "user", "content": user_message},
         ]
 
-    def _resolve_prompt_templates(self, payload: dict[str, Any]) -> dict[str, str]:
-        defaults = get_default_prompt_templates()
+    def _resolve_prompt_templates(self, payload: dict[str, Any], *, uses_retrieval: bool) -> dict[str, str]:
+        defaults = get_default_prompt_templates(uses_retrieval=uses_retrieval)
         system_prompt = payload.get("system_prompt")
         user_prompt_template = payload.get("user_prompt_template")
 
@@ -245,7 +278,13 @@ class KnowledgeBaseQAService:
         return fallback
 
 
-def get_default_prompt_templates() -> dict[str, str]:
+def get_default_prompt_templates(*, uses_retrieval: bool = True) -> dict[str, str]:
+    if not uses_retrieval:
+        return {
+            "system_prompt": DEFAULT_DIRECT_SYSTEM_PROMPT,
+            "user_prompt_template": DEFAULT_DIRECT_USER_PROMPT_TEMPLATE,
+        }
+
     return {
         "system_prompt": DEFAULT_SYSTEM_PROMPT,
         "user_prompt_template": DEFAULT_USER_PROMPT_TEMPLATE,
@@ -255,5 +294,6 @@ def get_default_prompt_templates() -> dict[str, str]:
 def get_prompt_template_metadata() -> dict[str, Any]:
     return {
         **get_default_prompt_templates(),
+        "direct_answer_defaults": get_default_prompt_templates(uses_retrieval=False),
         "supported_variables": SUPPORTED_PROMPT_VARIABLES,
     }

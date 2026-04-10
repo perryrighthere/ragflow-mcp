@@ -30,6 +30,7 @@
             <label class="field">
               <span>Dataset IDs</span>
               <input id="dataset_ids" name="dataset_ids" placeholder="kb_123,kb_456" />
+              <small class="field-note">留空则跳过知识库检索，直接调用 LLM。</small>
             </label>
             <label class="field">
               <span>Document IDs</span>
@@ -102,7 +103,8 @@
             <div class="prompt-editor-body">
               <p class="prompt-helper">
                 用户提示词模板支持两个变量：<code>{{question}}</code> 和
-                <code>{{knowledge_snippets}}</code>。
+                <code>{{knowledge_snippets}}</code>。未传 <code>dataset_ids</code> 时，
+                <code>{{knowledge_snippets}}</code> 会被渲染为空字符串。
               </p>
 
               <div class="prompt-grid">
@@ -134,7 +136,7 @@
           </details>
 
           <div class="actions">
-            <button id="submit-button" type="submit">Ask Knowledge Base</button>
+            <button id="submit-button" type="submit">Ask Assistant</button>
             <p id="status-text" class="status">Ready</p>
           </div>
         </form>
@@ -152,7 +154,7 @@
         <section class="panel">
           <div class="panel-head">
             <h2>Sources</h2>
-            <p>Only document name and content are passed to the LLM.</p>
+            <p>有检索时仅传文档名和正文；直连 LLM 时这里会为空。</p>
           </div>
           <div id="sources-output" class="sources-output">
             <p class="empty-state">No sources yet.</p>

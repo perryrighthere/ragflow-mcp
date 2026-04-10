@@ -150,8 +150,9 @@ docker run --rm \
 
 行为：
 
-- 服务端会先调用 RAGFlow `POST /api/v1/retrieval` 检索 chunks
-- 再将检索出的文档名和正文内容组装为提示词，调用配置好的 OpenAI 兼容 LLM 回答问题
+- 如果请求中传入 `dataset_ids` 字段，服务端会先调用 RAGFlow `POST /api/v1/retrieval` 检索 chunks，
+  再将检索出的文档名和正文内容组装为提示词，调用配置好的 OpenAI 兼容 LLM 回答问题
+- 如果未传 `dataset_ids` 字段，则跳过知识库检索，直接调用配置好的 OpenAI 兼容 LLM 回答问题
 - 接口始终按 `NDJSON` 方式流式返回
 
 请求示例：
@@ -169,8 +170,21 @@ curl -N --request POST \
 
 说明：
 
+- `dataset_ids` 是可选字段；传入时走知识库检索，不传时走直连 LLM
 - 返回 `application/x-ndjson`，事件类型包括 `context`、`answer_delta`、`done`、`error`
 - 常用可选参数还包括 `document_ids`、`similarity_threshold`、`vector_similarity_weight`、`top_k`、`metadata_condition`、`temperature`、`max_tokens`
+
+直连 LLM 示例：
+
+```bash
+curl -N --request POST \
+  --url http://127.0.0.1:8080/api/v1/qa/answer/stream \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "question": "五看六定是什么？",
+    "temperature": 0.2
+  }'
+```
 
 ## 知识门户文档同步
 

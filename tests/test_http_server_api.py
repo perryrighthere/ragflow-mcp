@@ -214,6 +214,10 @@ class HttpServerApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["data"]["system_prompt"], get_default_prompt_templates()["system_prompt"])
+        self.assertEqual(
+            response.json()["data"]["direct_answer_defaults"],
+            get_default_prompt_templates(uses_retrieval=False),
+        )
         self.assertIn("{{question}}", response.json()["data"]["supported_variables"])
 
     def test_knowledge_portal_sync_route_returns_download_summary(self):
@@ -360,6 +364,7 @@ class HttpServerApiTests(unittest.TestCase):
             "/api/v1/qa/answer/stream",
             json={
                 "question": "五看是什么？",
+                "dataset_ids": ["kb_123"],
                 "system_prompt": "你是项目顾问。",
                 "user_prompt_template": "问题={{question}}\n资料={{knowledge_snippets}}",
             },
@@ -405,6 +410,26 @@ class HttpServerApiTests(unittest.TestCase):
         self.assertEqual(self.fake_client.retrieve_calls[-1]["page_size"], 3)
         self.assertNotIn("stream", self.fake_client.retrieve_calls[-1])
 
+    def test_qa_stream_route_without_dataset_ids_calls_llm_directly(self):
+        with self.client.stream(
+            "POST",
+            "/api/v1/qa/answer/stream",
+            json={
+                "question": "五看是什么？",
+                "temperature": 0.3,
+            },
+        ) as response:
+            self.assertEqual(response.status_code, 200)
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        self.assertEqual([event["type"] for event in events], ["context", "answer_delta", "answer_delta", "done"])
+        self.assertEqual(self.fake_client.retrieve_calls, [])
+        self.assertEqual(events[0]["data"]["sources"], [])
+        self.assertEqual(events[0]["data"]["model"], self.fake_llm.model)
+        self.assertEqual(events[0]["data"]["llm_messages"][1]["content"], "五看是什么？")
+        self.assertEqual(self.fake_llm.stream_calls[0]["temperature"], 0.3)
+        self.assertEqual(events[-1]["data"]["answer"], "五看包括看行业、看市场、看用户、看竞争、看自己。")
+
     def test_qa_stream_route_returns_json_when_ragflow_connection_fails(self):
         def broken_retrieve(payload):
             raise RagflowAPIError("Unable to connect to RAGFlow: Connection reset by peer", status_code=502)
@@ -414,6 +439,7 @@ class HttpServerApiTests(unittest.TestCase):
             "/api/v1/qa/answer/stream",
             json={
                 "question": "五看是什么？",
+                "dataset_ids": ["kb_123"],
             },
         )
 
@@ -422,6 +448,34 @@ class HttpServerApiTests(unittest.TestCase):
             response.json(),
             {"detail": "Unable to connect to RAGFlow: Connection reset by peer"},
         )
+
+    def test_qa_stream_route_without_dataset_ids_does_not_require_ragflow_config(self):
+        app = create_application(
+            Settings(
+                ragflow_base_url="",
+                ragflow_api_key="",
+                llm_base_url="https://llm.local/v1",
+                llm_api_key="llm-key",
+                llm_model="test-qa-model",
+                request_timeout=60.0,
+                llm_timeout=60.0,
+                server_host="127.0.0.1",
+                server_port=8080,
+            )
+        )
+        app.state.runtime._llm_client = FakeLLMClient()
+        client = TestClient(app)
+
+        with client.stream(
+            "POST",
+            "/api/v1/qa/answer/stream",
+            json={"question": "五看是什么？"},
+        ) as response:
+            self.assertEqual(response.status_code, 200)
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        self.assertEqual(events[-1]["type"], "done")
+        self.assertEqual(events[-1]["data"]["source_count"], 0)
 
 
 if __name__ == "__main__":

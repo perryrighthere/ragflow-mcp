@@ -105,13 +105,39 @@ class QAServiceTests(unittest.TestCase):
         llm_client = FakeLLMClient()
         service = KnowledgeBaseQAService(ragflow_client, llm_client)
 
-        result = service.answer_question({"question": "没有命中怎么办？"})
+        result = service.answer_question({"question": "没有命中怎么办？", "dataset_ids": ["kb_123"]})
 
         self.assertEqual(result["source_count"], 0)
         self.assertEqual(result["retrieval_total"], 0)
         self.assertEqual(result["llm_messages"], [])
         self.assertEqual(result["prompt_templates"], get_default_prompt_templates())
         self.assertEqual(llm_client.calls, [])
+
+    def test_answer_question_without_dataset_ids_calls_llm_directly(self):
+        ragflow_client = FakeRagflowClient({"code": 0, "data": {"total": 0, "chunks": []}})
+        llm_client = FakeLLMClient()
+        service = KnowledgeBaseQAService(ragflow_client, llm_client)
+
+        result = service.answer_question({"question": "五看六定是什么？"})
+
+        self.assertEqual(ragflow_client.calls, [])
+        self.assertEqual(result["source_count"], 0)
+        self.assertEqual(result["retrieval_total"], 0)
+        self.assertEqual(result["answer"], "这是答案。")
+        self.assertEqual(
+            result["prompt_templates"],
+            get_default_prompt_templates(uses_retrieval=False),
+        )
+        self.assertEqual(
+            llm_client.calls[0]["messages"],
+            [
+                {
+                    "role": "system",
+                    "content": get_default_prompt_templates(uses_retrieval=False)["system_prompt"],
+                },
+                {"role": "user", "content": "五看六定是什么？"},
+            ],
+        )
 
     def test_answer_question_applies_prompt_overrides(self):
         ragflow_client = FakeRagflowClient(
@@ -134,6 +160,7 @@ class QAServiceTests(unittest.TestCase):
         result = service.answer_question(
             {
                 "question": "流程目的是什么？",
+                "dataset_ids": ["kb_123"],
                 "system_prompt": "你是流程顾问。",
                 "user_prompt_template": "Q={{question}}\nKB={{knowledge_snippets}}",
             }
@@ -163,7 +190,7 @@ class QAServiceTests(unittest.TestCase):
         llm_client = FakeLLMClient()
         service = KnowledgeBaseQAService(ragflow_client, llm_client)
 
-        prepared = service.prepare_answer({"question": "流程目的是什么？"})
+        prepared = service.prepare_answer({"question": "流程目的是什么？", "dataset_ids": ["kb_123"]})
 
         self.assertEqual(prepared.question, "流程目的是什么？")
         self.assertEqual(prepared.source_count, 1)
@@ -172,10 +199,27 @@ class QAServiceTests(unittest.TestCase):
         self.assertIn("Document: doc-a", prepared.llm_messages[1]["content"])
         self.assertEqual(llm_client.calls, [])
 
+    def test_prepare_answer_without_dataset_ids_builds_direct_messages(self):
+        ragflow_client = FakeRagflowClient({"code": 0, "data": {"total": 1, "chunks": []}})
+        llm_client = FakeLLMClient()
+        service = KnowledgeBaseQAService(ragflow_client, llm_client)
+
+        prepared = service.prepare_answer({"question": "流程目的是什么？"})
+
+        self.assertFalse(prepared.uses_retrieval)
+        self.assertEqual(prepared.sources, [])
+        self.assertEqual(prepared.retrieval_total, 0)
+        self.assertEqual(ragflow_client.calls, [])
+        self.assertEqual(prepared.llm_messages[1]["content"], "流程目的是什么？")
+
     def test_prompt_template_metadata_includes_supported_variables(self):
         metadata = get_prompt_template_metadata()
 
         self.assertEqual(metadata["system_prompt"], get_default_prompt_templates()["system_prompt"])
+        self.assertEqual(
+            metadata["direct_answer_defaults"],
+            get_default_prompt_templates(uses_retrieval=False),
+        )
         self.assertIn("{{question}}", metadata["supported_variables"])
         self.assertIn("{{knowledge_snippets}}", metadata["supported_variables"])
 
