@@ -25,6 +25,8 @@ class FakeClient:
                     {
                         "content": "五看包括看行业、看市场、看用户、看竞争、看自己。",
                         "document_keyword": "IPD-2.2.3.1-002 整车产品项目任务书开发流程说明书.docx",
+                        "dataset_id": "kb_123",
+                        "document_id": "doc_001",
                         "similarity": 0.91,
                     }
                 ],
@@ -397,8 +399,20 @@ class HttpServerApiTests(unittest.TestCase):
             events[0]["data"]["sources"],
             [
                 {
+                    "reference_index": 1,
                     "document_keyword": "IPD-2.2.3.1-002 整车产品项目任务书开发流程说明书.docx",
                     "content": "五看包括看行业、看市场、看用户、看竞争、看自己。",
+                }
+            ],
+        )
+        self.assertEqual(
+            events[0]["data"]["referenced_documents"],
+            [
+                {
+                    "index": 1,
+                    "document_name": "IPD-2.2.3.1-002 整车产品项目任务书开发流程说明书.docx",
+                    "dataset_id": "kb_123",
+                    "document_id": "doc_001",
                 }
             ],
         )
@@ -425,6 +439,7 @@ class HttpServerApiTests(unittest.TestCase):
         self.assertEqual([event["type"] for event in events], ["context", "answer_delta", "answer_delta", "done"])
         self.assertEqual(self.fake_client.retrieve_calls, [])
         self.assertEqual(events[0]["data"]["sources"], [])
+        self.assertEqual(events[0]["data"]["referenced_documents"], [])
         self.assertEqual(events[0]["data"]["model"], self.fake_llm.model)
         self.assertEqual(events[0]["data"]["llm_messages"][1]["content"], "五看是什么？")
         self.assertEqual(self.fake_llm.stream_calls[0]["temperature"], 0.3)
@@ -476,6 +491,7 @@ class HttpServerApiTests(unittest.TestCase):
 
         self.assertEqual(events[-1]["type"], "done")
         self.assertEqual(events[-1]["data"]["source_count"], 0)
+        self.assertEqual(events[-1]["data"]["referenced_documents"], [])
 
 
 if __name__ == "__main__":

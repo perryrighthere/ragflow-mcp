@@ -172,6 +172,8 @@ curl -N --request POST \
 
 - `dataset_ids` 是可选字段；传入时走知识库检索，不传时走直连 LLM
 - 返回 `application/x-ndjson`，事件类型包括 `context`、`answer_delta`、`done`、`error`
+- 检索模式下，最终 JSON 会额外返回 `referenced_documents` 字段，按编号列出引用文档的 `document_name`、`dataset_id`、`document_id`
+- 检索模式下，LLM 回答中的 `[1]`、`[2]` 等引用编号会与 `referenced_documents` 中的 `index` 保持一致
 - 常用可选参数还包括 `document_ids`、`similarity_threshold`、`vector_similarity_weight`、`top_k`、`metadata_condition`、`temperature`、`max_tokens`
 
 直连 LLM 示例：

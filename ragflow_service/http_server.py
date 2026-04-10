@@ -366,6 +366,7 @@ def _build_qa_streaming_response(runtime: ServiceRuntime, request_payload: dict[
         context_payload = {
             "question": prepared.question,
             "sources": prepared.sources,
+            "referenced_documents": prepared.referenced_documents,
             "source_count": prepared.source_count,
             "retrieval_total": prepared.retrieval_total,
             "llm_messages": prepared.llm_messages,

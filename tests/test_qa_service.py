@@ -60,11 +60,15 @@ class QAServiceTests(unittest.TestCase):
                     {
                         "content": "五看包括看行业、看市场、看用户、看竞争、看自己。",
                         "document_keyword": "doc-a",
+                        "dataset_id": "kb_123",
+                        "document_id": "doc_001",
                         "similarity": 0.91,
                     },
                     {
                         "content": "六定包括定位、定标、定价、定配、定本、定量。",
                         "document_keyword": "doc-b",
+                        "dataset_id": "kb_456",
+                        "document_id": "doc_002",
                         "vector_similarity": 0.83,
                     },
                 ],
@@ -85,8 +89,33 @@ class QAServiceTests(unittest.TestCase):
         self.assertEqual(
             result["sources"],
             [
-                {"document_keyword": "doc-a", "content": "五看包括看行业、看市场、看用户、看竞争、看自己。"},
-                {"document_keyword": "doc-b", "content": "六定包括定位、定标、定价、定配、定本、定量。"},
+                {
+                    "reference_index": 1,
+                    "document_keyword": "doc-a",
+                    "content": "五看包括看行业、看市场、看用户、看竞争、看自己。",
+                },
+                {
+                    "reference_index": 2,
+                    "document_keyword": "doc-b",
+                    "content": "六定包括定位、定标、定价、定配、定本、定量。",
+                },
+            ],
+        )
+        self.assertEqual(
+            result["referenced_documents"],
+            [
+                {
+                    "index": 1,
+                    "document_name": "doc-a",
+                    "dataset_id": "kb_123",
+                    "document_id": "doc_001",
+                },
+                {
+                    "index": 2,
+                    "document_name": "doc-b",
+                    "dataset_id": "kb_456",
+                    "document_id": "doc_002",
+                },
             ],
         )
         self.assertEqual(result["llm_messages"], llm_client.calls[0]["messages"])
@@ -94,8 +123,10 @@ class QAServiceTests(unittest.TestCase):
         self.assertEqual(ragflow_client.calls[0]["page_size"], 6)
         self.assertEqual(llm_client.calls[0]["temperature"], 0.2)
         prompt = llm_client.calls[0]["messages"][1]["content"]
+        self.assertIn("[1]", prompt)
         self.assertIn("Document: doc-a", prompt)
         self.assertIn("Content:\n五看包括看行业、看市场、看用户、看竞争、看自己。", prompt)
+        self.assertIn("[2]", prompt)
         self.assertIn("Document: doc-b", prompt)
         self.assertNotIn("similarity", prompt)
         self.assertNotIn("0.91", prompt)
@@ -110,6 +141,7 @@ class QAServiceTests(unittest.TestCase):
         self.assertEqual(result["source_count"], 0)
         self.assertEqual(result["retrieval_total"], 0)
         self.assertEqual(result["llm_messages"], [])
+        self.assertEqual(result["referenced_documents"], [])
         self.assertEqual(result["prompt_templates"], get_default_prompt_templates())
         self.assertEqual(llm_client.calls, [])
 
@@ -123,6 +155,7 @@ class QAServiceTests(unittest.TestCase):
         self.assertEqual(ragflow_client.calls, [])
         self.assertEqual(result["source_count"], 0)
         self.assertEqual(result["retrieval_total"], 0)
+        self.assertEqual(result["referenced_documents"], [])
         self.assertEqual(result["answer"], "这是答案。")
         self.assertEqual(
             result["prompt_templates"],
@@ -149,6 +182,8 @@ class QAServiceTests(unittest.TestCase):
                         {
                             "content": "流程目标是支撑产品完成立项。",
                             "document_keyword": "doc-a",
+                            "dataset_id": "kb_123",
+                            "document_id": "doc_001",
                         }
                     ],
                 },
@@ -182,6 +217,8 @@ class QAServiceTests(unittest.TestCase):
                         {
                             "content": "流程目标是支撑产品完成立项。",
                             "document_keyword": "doc-a",
+                            "dataset_id": "kb_123",
+                            "document_id": "doc_001",
                         }
                     ],
                 },
@@ -196,8 +233,81 @@ class QAServiceTests(unittest.TestCase):
         self.assertEqual(prepared.source_count, 1)
         self.assertEqual(prepared.prompt_templates, get_default_prompt_templates())
         self.assertEqual(prepared.llm_messages[0]["role"], "system")
+        self.assertEqual(
+            prepared.referenced_documents,
+            [
+                {
+                    "index": 1,
+                    "document_name": "doc-a",
+                    "dataset_id": "kb_123",
+                    "document_id": "doc_001",
+                }
+            ],
+        )
         self.assertIn("Document: doc-a", prepared.llm_messages[1]["content"])
         self.assertEqual(llm_client.calls, [])
+
+    def test_prepare_answer_reuses_same_reference_index_for_chunks_from_same_document(self):
+        ragflow_client = FakeRagflowClient(
+            {
+                "code": 0,
+                "data": {
+                    "total": 3,
+                    "chunks": [
+                        {
+                            "content": "第一段内容。",
+                            "document_keyword": "doc-a",
+                            "dataset_id": "kb_123",
+                            "document_id": "doc_001",
+                        },
+                        {
+                            "content": "第二段内容。",
+                            "document_keyword": "doc-a",
+                            "dataset_id": "kb_123",
+                            "document_id": "doc_001",
+                        },
+                        {
+                            "content": "另一份文档内容。",
+                            "document_keyword": "doc-b",
+                            "dataset_id": "kb_123",
+                            "document_id": "doc_002",
+                        },
+                    ],
+                },
+            }
+        )
+        llm_client = FakeLLMClient()
+        service = KnowledgeBaseQAService(ragflow_client, llm_client)
+
+        prepared = service.prepare_answer({"question": "总结一下", "dataset_ids": ["kb_123"]})
+
+        self.assertEqual(
+            prepared.sources,
+            [
+                {"reference_index": 1, "document_keyword": "doc-a", "content": "第一段内容。"},
+                {"reference_index": 1, "document_keyword": "doc-a", "content": "第二段内容。"},
+                {"reference_index": 2, "document_keyword": "doc-b", "content": "另一份文档内容。"},
+            ],
+        )
+        self.assertEqual(
+            prepared.referenced_documents,
+            [
+                {
+                    "index": 1,
+                    "document_name": "doc-a",
+                    "dataset_id": "kb_123",
+                    "document_id": "doc_001",
+                },
+                {
+                    "index": 2,
+                    "document_name": "doc-b",
+                    "dataset_id": "kb_123",
+                    "document_id": "doc_002",
+                },
+            ],
+        )
+        self.assertIn("[1]\nDocument: doc-a", prepared.llm_messages[1]["content"])
+        self.assertIn("[2]\nDocument: doc-b", prepared.llm_messages[1]["content"])
 
     def test_prepare_answer_without_dataset_ids_builds_direct_messages(self):
         ragflow_client = FakeRagflowClient({"code": 0, "data": {"total": 1, "chunks": []}})
@@ -208,6 +318,7 @@ class QAServiceTests(unittest.TestCase):
 
         self.assertFalse(prepared.uses_retrieval)
         self.assertEqual(prepared.sources, [])
+        self.assertEqual(prepared.referenced_documents, [])
         self.assertEqual(prepared.retrieval_total, 0)
         self.assertEqual(ragflow_client.calls, [])
         self.assertEqual(prepared.llm_messages[1]["content"], "流程目的是什么？")

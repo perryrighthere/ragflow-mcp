@@ -13,7 +13,8 @@ DEFAULT_SYSTEM_PROMPT = """
 每条知识片段只包含文档名称和正文内容。
 如果现有知识片段不足以回答问题，请明确说明知识库中暂无足够信息。
 请使用与用户问题相同的语言作答。
-在合适的情况下，请在回答中提及支撑答案的文档名称。
+如果引用了知识片段中的信息，请在对应内容后使用方括号编号标注来源，例如 [1]、[2]。
+引用编号必须与提供的引用文档列表编号一致。
 """.strip()
 
 DEFAULT_USER_PROMPT_TEMPLATE = """
@@ -60,7 +61,8 @@ RETRIEVAL_FIELDS = {
 @dataclass(frozen=True)
 class PreparedAnswer:
     question: str
-    sources: list[dict[str, str]]
+    sources: list[dict[str, str | int]]
+    referenced_documents: list[dict[str, str | int]]
     retrieval_total: int
     llm_messages: list[dict[str, str]]
     prompt_templates: dict[str, str]
@@ -75,6 +77,7 @@ class PreparedAnswer:
             "question": self.question,
             "answer": answer,
             "sources": self.sources,
+            "referenced_documents": self.referenced_documents,
             "source_count": self.source_count,
             "retrieval_total": self.retrieval_total,
             "llm_messages": self.llm_messages,
@@ -118,6 +121,7 @@ class KnowledgeBaseQAService:
             return PreparedAnswer(
                 question=question,
                 sources=[],
+                referenced_documents=[],
                 retrieval_total=0,
                 llm_messages=self._build_messages(
                     question,
@@ -136,11 +140,14 @@ class KnowledgeBaseQAService:
         retrieval_response = self._ragflow_client.retrieve_chunks(retrieval_payload)
         self._raise_for_retrieval_failure(retrieval_response)
 
-        sources = self._extract_sources(retrieval_response.payload)
+        retrieved_chunks = self._extract_retrieved_chunks(retrieval_response.payload)
+        referenced_documents = self._build_referenced_documents(retrieved_chunks)
+        sources = self._build_sources(retrieved_chunks, referenced_documents)
         if not sources:
             return PreparedAnswer(
                 question=question,
                 sources=[],
+                referenced_documents=[],
                 retrieval_total=self._extract_retrieval_total(retrieval_response.payload),
                 llm_messages=[],
                 prompt_templates=prompt_templates,
@@ -150,6 +157,7 @@ class KnowledgeBaseQAService:
         return PreparedAnswer(
             question=question,
             sources=sources,
+            referenced_documents=referenced_documents,
             retrieval_total=self._extract_retrieval_total(
                 retrieval_response.payload,
                 fallback=len(sources),
@@ -186,7 +194,7 @@ class KnowledgeBaseQAService:
         if isinstance(payload, dict) and payload.get("code") not in (None, 0):
             raise RagflowAPIError("RAGFlow retrieval returned an error payload.", status_code=502, payload=payload)
 
-    def _extract_sources(self, payload: Any) -> list[dict[str, str]]:
+    def _extract_retrieved_chunks(self, payload: Any) -> list[dict[str, str]]:
         if not isinstance(payload, dict):
             return []
 
@@ -198,20 +206,85 @@ class KnowledgeBaseQAService:
         if not isinstance(chunks, list):
             return []
 
-        sources: list[dict[str, str]] = []
+        chunks_with_metadata: list[dict[str, str]] = []
         for chunk in chunks:
             if not isinstance(chunk, dict):
                 continue
 
-            document_keyword = str(chunk.get("document_keyword", "")).strip()
+            document_keyword = str(
+                chunk.get("document_keyword")
+                or chunk.get("document_name")
+                or chunk.get("doc_name")
+                or ""
+            ).strip()
             content = str(chunk.get("content", "")).strip()
             if not document_keyword and not content:
                 continue
 
-            sources.append(
+            chunks_with_metadata.append(
                 {
                     "document_keyword": document_keyword,
+                    "dataset_id": str(chunk.get("dataset_id", "")).strip(),
+                    "document_id": str(chunk.get("document_id", "")).strip(),
                     "content": content,
+                }
+            )
+
+        return chunks_with_metadata
+
+    def _build_referenced_documents(
+        self,
+        retrieved_chunks: list[dict[str, str]],
+    ) -> list[dict[str, str | int]]:
+        referenced_documents: list[dict[str, str | int]] = []
+        seen_keys: dict[tuple[str, str, str], int] = {}
+
+        for chunk in retrieved_chunks:
+            document_name = chunk["document_keyword"]
+            dataset_id = chunk["dataset_id"]
+            document_id = chunk["document_id"]
+            reference_key = (dataset_id, document_id, document_name)
+            if reference_key in seen_keys:
+                continue
+
+            reference_index = len(referenced_documents) + 1
+            seen_keys[reference_key] = reference_index
+            referenced_documents.append(
+                {
+                    "index": reference_index,
+                    "document_name": document_name,
+                    "dataset_id": dataset_id,
+                    "document_id": document_id,
+                }
+            )
+
+        return referenced_documents
+
+    def _build_sources(
+        self,
+        retrieved_chunks: list[dict[str, str]],
+        referenced_documents: list[dict[str, str | int]],
+    ) -> list[dict[str, str | int]]:
+        reference_index_by_key = {
+            (
+                str(document["dataset_id"]),
+                str(document["document_id"]),
+                str(document["document_name"]),
+            ): int(document["index"])
+            for document in referenced_documents
+        }
+
+        sources: list[dict[str, str | int]] = []
+        for chunk in retrieved_chunks:
+            reference_index = reference_index_by_key.get(
+                (chunk["dataset_id"], chunk["document_id"], chunk["document_keyword"]),
+                0,
+            )
+            sources.append(
+                {
+                    "reference_index": reference_index,
+                    "document_keyword": chunk["document_keyword"],
+                    "content": chunk["content"],
                 }
             )
 
@@ -220,18 +293,21 @@ class KnowledgeBaseQAService:
     def _build_messages(
         self,
         question: str,
-        sources: list[dict[str, str]],
+        sources: list[dict[str, str | int]],
         *,
         prompt_templates: dict[str, str] | None = None,
     ) -> list[dict[str, str]]:
         prompt_templates = prompt_templates or get_default_prompt_templates()
         snippets: list[str] = []
         for index, source in enumerate(sources, start=1):
-            lines = [f"[{index}]"]
-            if source["document_keyword"]:
-                lines.append(f"Document: {source['document_keyword']}")
-            if source["content"]:
-                lines.append(f"Content:\n{source['content']}")
+            reference_index = int(source.get("reference_index") or index)
+            document_keyword = str(source.get("document_keyword", "")).strip()
+            content = str(source.get("content", "")).strip()
+            lines = [f"[{reference_index}]"]
+            if document_keyword:
+                lines.append(f"Document: {document_keyword}")
+            if content:
+                lines.append(f"Content:\n{content}")
             snippets.append("\n".join(lines))
         snippets_text = "\n\n".join(snippets)
 

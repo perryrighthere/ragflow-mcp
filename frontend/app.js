@@ -1,18 +1,50 @@
-const form = document.getElementById("qa-form");
-const submitButton = document.getElementById("submit-button");
-const resetPromptsButton = document.getElementById("reset-prompts-button");
-const statusText = document.getElementById("status-text");
-const promptStatusText = document.getElementById("prompt-status-text");
-const metaText = document.getElementById("meta-text");
-const answerOutput = document.getElementById("answer-output");
-const requestOutput = document.getElementById("request-output");
-const responseOutput = document.getElementById("response-output");
-const llmPromptOutput = document.getElementById("llm-prompt-output");
-const sourcesOutput = document.getElementById("sources-output");
-const logOutput = document.getElementById("log-output");
-const datasetIdsInput = document.getElementById("dataset_ids");
-const systemPromptInput = document.getElementById("system_prompt");
-const userPromptTemplateInput = document.getElementById("user_prompt_template");
+const doc = typeof document !== "undefined" ? document : null;
+
+function createFallbackElement() {
+  return {
+    textContent: "",
+    innerHTML: "",
+    value: "",
+    disabled: false,
+    className: "",
+    scrollTop: 0,
+    scrollHeight: 0,
+    prepend() {},
+    appendChild() {},
+    addEventListener() {},
+  };
+}
+
+function getElementById(id) {
+  if (doc && typeof doc.getElementById === "function") {
+    return doc.getElementById(id) || createFallbackElement();
+  }
+  return createFallbackElement();
+}
+
+function createElement(tagName) {
+  if (doc && typeof doc.createElement === "function") {
+    return doc.createElement(tagName);
+  }
+  return createFallbackElement();
+}
+
+const form = getElementById("qa-form");
+const submitButton = getElementById("submit-button");
+const resetPromptsButton = getElementById("reset-prompts-button");
+const statusText = getElementById("status-text");
+const promptStatusText = getElementById("prompt-status-text");
+const metaText = getElementById("meta-text");
+const answerOutput = getElementById("answer-output");
+const requestOutput = getElementById("request-output");
+const responseOutput = getElementById("response-output");
+const llmPromptOutput = getElementById("llm-prompt-output");
+const sourcesOutput = getElementById("sources-output");
+const referencedDocumentsOutput = getElementById("referenced-documents-output");
+const logOutput = getElementById("log-output");
+const datasetIdsInput = getElementById("dataset_ids");
+const systemPromptInput = getElementById("system_prompt");
+const userPromptTemplateInput = getElementById("user_prompt_template");
 
 let defaultPromptTemplates = null;
 let currentPromptMode = "direct";
@@ -51,7 +83,7 @@ function setStatus(text, busy) {
 }
 
 function appendLog(text, tone = "info") {
-  const item = document.createElement("p");
+  const item = createElement("p");
   item.className = `log-item log-${tone}`;
   item.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
   logOutput.prepend(item);
@@ -85,6 +117,10 @@ function escapeAttribute(value) {
 function sanitizeUrl(url) {
   const trimmed = String(url || "").trim();
   if (!trimmed) {
+    return "";
+  }
+
+  if (typeof window === "undefined") {
     return "";
   }
 
@@ -381,8 +417,9 @@ function parseJsonText(rawText) {
 function buildMetaText(data) {
   const model = data?.model || "No model";
   const sourceCount = data?.source_count || 0;
+  const documentCount = Array.isArray(data?.referenced_documents) ? data.referenced_documents.length : 0;
   if (sourceCount > 0) {
-    return `${model} · ${sourceCount} sources`;
+    return `${model} · ${documentCount} docs · ${sourceCount} sources`;
   }
   if (Array.isArray(data?.llm_messages) && data.llm_messages.length > 0) {
     return `${model} · direct LLM`;
@@ -394,7 +431,7 @@ function renderSources(sources) {
   sourcesOutput.innerHTML = "";
 
   if (!Array.isArray(sources) || sources.length === 0) {
-    const empty = document.createElement("p");
+    const empty = createElement("p");
     empty.className = "empty-state";
     empty.textContent = "No sources returned.";
     sourcesOutput.appendChild(empty);
@@ -402,18 +439,52 @@ function renderSources(sources) {
   }
 
   sources.forEach((source, index) => {
-    const card = document.createElement("article");
+    const card = createElement("article");
     card.className = "source-card";
 
-    const title = document.createElement("h3");
-    title.textContent = source.document_keyword || `Snippet ${index + 1}`;
+    const title = createElement("h3");
+    const referenceIndex = Number(source.reference_index || 0);
+    const titlePrefix = referenceIndex > 0 ? `[${referenceIndex}] ` : "";
+    title.textContent = `${titlePrefix}${source.document_keyword || `Snippet ${index + 1}`}`;
 
-    const body = document.createElement("pre");
+    const body = createElement("pre");
     body.textContent = source.content || "";
 
     card.appendChild(title);
     card.appendChild(body);
     sourcesOutput.appendChild(card);
+  });
+}
+
+function renderReferencedDocuments(documents) {
+  referencedDocumentsOutput.innerHTML = "";
+
+  if (!Array.isArray(documents) || documents.length === 0) {
+    const empty = createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "No referenced documents returned.";
+    referencedDocumentsOutput.appendChild(empty);
+    return;
+  }
+
+  documents.forEach((document) => {
+    const card = createElement("article");
+    card.className = "source-card";
+
+    const title = createElement("h3");
+    const documentIndex = Number(document.index || 0);
+    const titlePrefix = documentIndex > 0 ? `[${documentIndex}] ` : "";
+    title.textContent = `${titlePrefix}${document.document_name || "Unnamed document"}`;
+
+    const body = createElement("pre");
+    body.textContent = [
+      `dataset_id: ${document.dataset_id || ""}`,
+      `document_id: ${document.document_id || ""}`,
+    ].join("\n");
+
+    card.appendChild(title);
+    card.appendChild(body);
+    referencedDocumentsOutput.appendChild(card);
   });
 }
 
@@ -479,12 +550,14 @@ function resetAnswerPanels() {
   renderAnswerText("");
   responseOutput.textContent = "{}";
   renderSources([]);
+  renderReferencedDocuments([]);
   renderLlmMessages([]);
 }
 
 function applyAnswerPayload(data) {
   renderAnswerMarkdown(data.answer || "");
   renderSources(data.sources || []);
+  renderReferencedDocuments(data.referenced_documents || []);
   renderLlmMessages(data.llm_messages);
   metaText.textContent = buildMetaText(data);
 }
@@ -541,6 +614,7 @@ function processStreamLine(line, state) {
 
   if (event.type === "context") {
     renderSources(event.data?.sources || []);
+    renderReferencedDocuments(event.data?.referenced_documents || []);
     renderLlmMessages(event.data?.llm_messages);
     metaText.textContent = buildMetaText(event.data);
     appendLog("Prepared the answer context and started streaming.", "info");
@@ -719,6 +793,7 @@ form.addEventListener("submit", async (event) => {
     if (!(error instanceof Error && error.keepCurrentOutput)) {
       renderAnswerText(message);
       renderSources([]);
+      renderReferencedDocuments([]);
       renderLlmMessages([]);
     }
     metaText.textContent = error instanceof Error && error.keepCurrentOutput ? "Stream interrupted" : "Request failed";
@@ -771,4 +846,6 @@ datasetIdsInput.addEventListener("input", () => {
       : "Direct LLM mode detected. Keeping your custom prompt edits.";
 });
 
-loadPromptTemplates();
+if (doc && typeof doc.createElement === "function" && typeof fetch === "function") {
+  loadPromptTemplates();
+}
