@@ -20,6 +20,10 @@ class FakeLLMClient:
         self.model = "fake-model"
 
     def create_chat_completion(self, messages, *, temperature=None, max_tokens=None):
+        if messages and messages[0]["content"].startswith("你是一个对话标题生成助手"):
+            content = "五看六定说明"
+        else:
+            content = "这是答案。"
         self.calls.append(
             {
                 "messages": messages,
@@ -33,7 +37,7 @@ class FakeLLMClient:
                 {
                     "message": {
                         "role": "assistant",
-                        "content": "这是答案。",
+                        "content": content,
                     }
                 }
             ],
@@ -333,6 +337,17 @@ class QAServiceTests(unittest.TestCase):
         )
         self.assertIn("{{question}}", metadata["supported_variables"])
         self.assertIn("{{knowledge_snippets}}", metadata["supported_variables"])
+
+    def test_generate_conversation_title_uses_llm(self):
+        ragflow_client = FakeRagflowClient({"code": 0, "data": {"total": 0, "chunks": []}})
+        llm_client = FakeLLMClient()
+        service = KnowledgeBaseQAService(ragflow_client, llm_client)
+
+        title = service.generate_conversation_title(question="五看六定是什么？", answer="这是答案。")
+
+        self.assertEqual(title, "五看六定说明")
+        self.assertEqual(llm_client.calls[-1]["temperature"], 0.2)
+        self.assertEqual(llm_client.calls[-1]["max_tokens"], 32)
 
 
 if __name__ == "__main__":

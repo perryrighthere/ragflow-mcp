@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from .exceptions import KnowledgePortalAPIError, ValidationError
 from .knowledge_portal_client import KnowledgePortalClient
@@ -26,6 +27,17 @@ class KnowledgePortalSyncService:
         self.client_factory = client_factory or KnowledgePortalClient
 
     def sync_documents(self, payload: dict[str, Any]) -> dict[str, Any]:
+        summary, documents = self.start_sync(payload)
+        for _ in documents:
+            pass
+        return summary
+
+    def start_sync(
+        self,
+        payload: dict[str, Any],
+        *,
+        collect_documents: bool = True,
+    ) -> tuple[dict[str, Any], Iterator[dict[str, Any]]]:
         normalized = self._validate_payload(payload)
         client = self.client_factory(
             base_url=normalized["base_url"],
@@ -46,88 +58,82 @@ class KnowledgePortalSyncService:
         target_root = self.output_dir
         target_root.mkdir(parents=True, exist_ok=True)
 
-        downloaded_files = 0
-        documents: list[dict[str, Any]] = []
-        errors: list[dict[str, Any]] = []
-        remaining_download_files = normalized["max_download_files"]
-        download_limit_reached = False
-
-        for item in list_items:
-            if remaining_download_files == 0:
-                download_limit_reached = True
-
-            fd_id = str(item.get("fdId") or "").strip()
-            if not fd_id:
-                errors.append({"stage": "detail", "detail": "Document item is missing fdId", "item": item})
-                continue
-
-            try:
-                detail_response = client.get_document_detail(fd_id=fd_id)
-                detail_data = detail_response.get("data")
-                if not isinstance(detail_data, dict):
-                    raise KnowledgePortalAPIError(
-                        "文件详情接口返回的 data 不是对象",
-                        status_code=502,
-                        payload={"document_id": fd_id, "response": detail_response},
-                    )
-
-                document_dir = self._build_document_dir(target_root, fd_id, str(detail_data.get("fdName") or item.get("fdName") or "document"))
-                document_dir.mkdir(parents=True, exist_ok=True)
-
-                detail_path = document_dir / "detail.json"
-                detail_path.write_text(json.dumps(detail_response, ensure_ascii=False, indent=2), encoding="utf-8")
-
-                content_path = None
-                content_text = detail_data.get("fdContent")
-                if isinstance(content_text, str) and content_text.strip():
-                    content_path = document_dir / "content.md"
-                    content_path.write_text(self._render_content_markdown(detail_data), encoding="utf-8")
-
-                downloaded = self._download_document_files(
-                    client,
-                    detail_data,
-                    document_dir,
-                    max_files=remaining_download_files,
-                    include_attachments=normalized["include_attachments"],
-                    include_cover_image=normalized["include_cover_image"],
-                )
-                downloaded_files += len(downloaded)
-                if remaining_download_files is not None:
-                    remaining_download_files -= len(downloaded)
-                    if remaining_download_files == 0:
-                        download_limit_reached = True
-
-                documents.append(
-                    {
-                        "fdId": fd_id,
-                        "fdName": detail_data.get("fdName") or item.get("fdName") or "",
-                        "saved_dir": str(document_dir),
-                        "detail_json_path": str(detail_path),
-                        "content_path": str(content_path) if content_path is not None else None,
-                        "downloaded_files": downloaded,
-                    }
-                )
-            except KnowledgePortalAPIError as exc:
-                errors.append(
-                    {
-                        "stage": "detail_or_download",
-                        "fdId": fd_id,
-                        "detail": str(exc),
-                        "payload": exc.payload,
-                    }
-                )
-
-        return {
+        summary = {
             "base_url": normalized["base_url"],
             "output_dir": str(target_root),
             "total_documents": len(list_items),
-            "downloaded_document_count": len(documents),
-            "downloaded_file_count": downloaded_files,
+            "downloaded_document_count": 0,
+            "downloaded_file_count": 0,
             "max_download_files": normalized["max_download_files"],
-            "download_limit_reached": download_limit_reached,
-            "documents": documents,
-            "errors": errors,
+            "download_limit_reached": False,
+            "documents": [],
+            "errors": [],
         }
+
+        remaining_download_files = normalized["max_download_files"]
+
+        def iter_documents() -> Iterator[dict[str, Any]]:
+            nonlocal remaining_download_files
+
+            for item in list_items:
+                if remaining_download_files == 0:
+                    summary["download_limit_reached"] = True
+
+                fd_id = str(item.get("fdId") or "").strip()
+                if not fd_id:
+                    summary["errors"].append({"stage": "detail", "detail": "Document item is missing fdId", "item": item})
+                    continue
+
+                try:
+                    document = self._sync_single_document(
+                        client,
+                        item,
+                        target_root=target_root,
+                        max_download_files=remaining_download_files,
+                        include_attachments=normalized["include_attachments"],
+                        include_cover_image=normalized["include_cover_image"],
+                    )
+                except KnowledgePortalAPIError as exc:
+                    summary["errors"].append(
+                        {
+                            "stage": "detail_or_download",
+                            "fdId": fd_id,
+                            "detail": str(exc),
+                            "payload": exc.payload,
+                        }
+                    )
+                    continue
+
+                downloaded_count = len(document.get("downloaded_files") or [])
+                summary["downloaded_document_count"] += 1
+                summary["downloaded_file_count"] += downloaded_count
+                if remaining_download_files is not None:
+                    remaining_download_files -= downloaded_count
+                    if remaining_download_files == 0:
+                        summary["download_limit_reached"] = True
+
+                if collect_documents:
+                    summary["documents"].append(document)
+                yield document
+
+        return summary, iter_documents()
+
+    def cleanup_document_cache(self, portal_document: dict[str, Any]) -> None:
+        saved_dir_value = str(portal_document.get("saved_dir") or "").strip()
+        if saved_dir_value:
+            saved_dir = Path(saved_dir_value)
+            if saved_dir.is_dir():
+                shutil.rmtree(saved_dir)
+                return
+            if saved_dir.exists():
+                saved_dir.unlink()
+                return
+
+        self._cleanup_path(portal_document.get("detail_json_path"))
+        self._cleanup_path(portal_document.get("content_path"))
+        for item in portal_document.get("downloaded_files") or []:
+            if isinstance(item, dict):
+                self._cleanup_path(item.get("path"))
 
     def _collect_all_documents(
         self,
@@ -243,6 +249,56 @@ class KnowledgePortalSyncService:
             )
 
         return saved_files
+
+    def _sync_single_document(
+        self,
+        client: KnowledgePortalClient,
+        item: dict[str, Any],
+        *,
+        target_root: Path,
+        max_download_files: int | None,
+        include_attachments: bool,
+        include_cover_image: bool,
+    ) -> dict[str, Any]:
+        fd_id = str(item.get("fdId") or "").strip()
+        detail_response = client.get_document_detail(fd_id=fd_id)
+        detail_data = detail_response.get("data")
+        if not isinstance(detail_data, dict):
+            raise KnowledgePortalAPIError(
+                "文件详情接口返回的 data 不是对象",
+                status_code=502,
+                payload={"document_id": fd_id, "response": detail_response},
+            )
+
+        document_dir = self._build_document_dir(target_root, fd_id, str(detail_data.get("fdName") or item.get("fdName") or "document"))
+        document_dir.mkdir(parents=True, exist_ok=True)
+
+        detail_path = document_dir / "detail.json"
+        detail_path.write_text(json.dumps(detail_response, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        content_path = None
+        content_text = detail_data.get("fdContent")
+        if isinstance(content_text, str) and content_text.strip():
+            content_path = document_dir / "content.md"
+            content_path.write_text(self._render_content_markdown(detail_data), encoding="utf-8")
+
+        downloaded = self._download_document_files(
+            client,
+            detail_data,
+            document_dir,
+            max_files=max_download_files,
+            include_attachments=include_attachments,
+            include_cover_image=include_cover_image,
+        )
+
+        return {
+            "fdId": fd_id,
+            "fdName": detail_data.get("fdName") or item.get("fdName") or "",
+            "saved_dir": str(document_dir),
+            "detail_json_path": str(detail_path),
+            "content_path": str(content_path) if content_path is not None else None,
+            "downloaded_files": downloaded,
+        }
 
     def _iter_download_targets(
         self,
@@ -389,3 +445,13 @@ class KnowledgePortalSyncService:
         text = re.sub(r"\s+", "_", text)
         text = re.sub(r"[^\w\u4e00-\u9fff-]+", "_", text)
         return text[:80].strip("_")
+
+    def _cleanup_path(self, path_value: Any) -> None:
+        path_text = str(path_value or "").strip()
+        if not path_text:
+            return
+        path = Path(path_text)
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()

@@ -31,111 +31,128 @@ class RagflowDocumentService:
             "include_attachments": normalized["include_attachments"],
             "include_cover_image": normalized["include_cover_image"],
         }
-        sync_result = self.knowledge_portal_service.sync_documents(sync_payload)
+        sync_result, synced_documents = self.knowledge_portal_service.start_sync(sync_payload, collect_documents=False)
 
         imported_documents: list[dict[str, Any]] = []
         skipped_documents: list[dict[str, Any]] = []
-        errors = self._normalize_errors(sync_result.get("errors"))
+        errors_raw = sync_result.get("errors")
+        if isinstance(errors_raw, list):
+            errors = errors_raw
+        else:
+            errors = []
+            sync_result["errors"] = errors
         parse_document_ids: list[str] = []
         uploaded_file_count = 0
         updated_document_count = 0
 
-        for portal_document in sync_result.get("documents") or []:
+        for portal_document in synced_documents:
             fd_id = str(portal_document.get("fdId") or "").strip()
             fd_name = str(portal_document.get("fdName") or "").strip()
             try:
-                detail_data = self._load_detail_data(portal_document)
-                upload_sources = self._build_upload_sources(
-                    portal_document,
-                    detail_data=detail_data,
-                    include_attachments=normalized["include_attachments"],
-                    include_cover_image=normalized["include_cover_image"],
-                    fallback_to_content_markdown=normalized["fallback_to_content_markdown"],
-                )
-            except (OSError, ValidationError, ValueError, json.JSONDecodeError) as exc:
-                errors.append(
-                    {
-                        "stage": "prepare_upload",
-                        "fdId": fd_id,
-                        "detail": str(exc),
-                    }
-                )
-                continue
+                try:
+                    detail_data = self._load_detail_data(portal_document)
+                    upload_sources = self._build_upload_sources(
+                        portal_document,
+                        detail_data=detail_data,
+                        include_attachments=normalized["include_attachments"],
+                        include_cover_image=normalized["include_cover_image"],
+                        fallback_to_content_markdown=normalized["fallback_to_content_markdown"],
+                    )
+                except (OSError, ValidationError, ValueError, json.JSONDecodeError) as exc:
+                    errors.append(
+                        {
+                            "stage": "prepare_upload",
+                            "fdId": fd_id,
+                            "detail": str(exc),
+                        }
+                    )
+                    continue
 
-            if not upload_sources:
-                skipped_documents.append(
+                if not upload_sources:
+                    skipped_documents.append(
+                        {
+                            "fdId": fd_id,
+                            "fdName": fd_name or str(detail_data.get("fdName") or ""),
+                            "reason": "No eligible files were available for upload.",
+                            "saved_dir": portal_document.get("saved_dir"),
+                        }
+                    )
+                    continue
+
+                try:
+                    uploaded_documents = self._upload_sources(
+                        dataset_id=normalized["dataset_id"],
+                        upload_sources=upload_sources,
+                    )
+                except RagflowAPIError as exc:
+                    errors.append(self._build_ragflow_error("upload", fd_id=fd_id, exc=exc))
+                    continue
+
+                uploaded_file_count += len(uploaded_documents)
+                ragflow_documents: list[dict[str, Any]] = []
+
+                for index, uploaded_document in enumerate(uploaded_documents):
+                    upload_source = upload_sources[index]
+                    update_payload = self._build_document_update_payload(
+                        base_update=normalized["document_update"],
+                        detail_data=detail_data,
+                        portal_document=portal_document,
+                        upload_source=upload_source,
+                    )
+                    ragflow_entry = {
+                        "document_id": uploaded_document["id"],
+                        "name": uploaded_document["name"],
+                        "upload_source": self._serialize_upload_source(upload_source),
+                    }
+                    try:
+                        update_response = self.client.update_document(
+                            normalized["dataset_id"],
+                            uploaded_document["id"],
+                            update_payload,
+                        )
+                        self._require_success_response(
+                            update_response,
+                            action=f"update document {uploaded_document['id']}",
+                        )
+                    except RagflowAPIError as exc:
+                        errors.append(
+                            self._build_ragflow_error(
+                                "update",
+                                fd_id=fd_id,
+                                exc=exc,
+                                document_id=uploaded_document["id"],
+                            )
+                        )
+                        ragflow_entry["status"] = "uploaded"
+                        ragflow_documents.append(ragflow_entry)
+                        continue
+
+                    updated_document_count += 1
+                    parse_document_ids.append(uploaded_document["id"])
+                    ragflow_entry["status"] = "updated"
+                    ragflow_entry["meta_fields"] = update_payload.get("meta_fields", {})
+                    ragflow_documents.append(ragflow_entry)
+
+                imported_documents.append(
                     {
                         "fdId": fd_id,
                         "fdName": fd_name or str(detail_data.get("fdName") or ""),
-                        "reason": "No eligible files were available for upload.",
                         "saved_dir": portal_document.get("saved_dir"),
+                        "upload_sources": [self._serialize_upload_source(item) for item in upload_sources],
+                        "ragflow_documents": ragflow_documents,
                     }
                 )
-                continue
-
-            try:
-                uploaded_documents = self._upload_sources(
-                    dataset_id=normalized["dataset_id"],
-                    upload_sources=upload_sources,
-                )
-            except RagflowAPIError as exc:
-                errors.append(self._build_ragflow_error("upload", fd_id=fd_id, exc=exc))
-                continue
-
-            uploaded_file_count += len(uploaded_documents)
-            ragflow_documents: list[dict[str, Any]] = []
-
-            for index, uploaded_document in enumerate(uploaded_documents):
-                upload_source = upload_sources[index]
-                update_payload = self._build_document_update_payload(
-                    base_update=normalized["document_update"],
-                    detail_data=detail_data,
-                    portal_document=portal_document,
-                    upload_source=upload_source,
-                )
-                ragflow_entry = {
-                    "document_id": uploaded_document["id"],
-                    "name": uploaded_document["name"],
-                    "upload_source": self._serialize_upload_source(upload_source),
-                }
+            finally:
                 try:
-                    update_response = self.client.update_document(
-                        normalized["dataset_id"],
-                        uploaded_document["id"],
-                        update_payload,
-                    )
-                    self._require_success_response(
-                        update_response,
-                        action=f"update document {uploaded_document['id']}",
-                    )
-                except RagflowAPIError as exc:
+                    self.knowledge_portal_service.cleanup_document_cache(portal_document)
+                except OSError as exc:
                     errors.append(
-                        self._build_ragflow_error(
-                            "update",
-                            fd_id=fd_id,
-                            exc=exc,
-                            document_id=uploaded_document["id"],
-                        )
+                        {
+                            "stage": "cleanup_cache",
+                            "fdId": fd_id,
+                            "detail": str(exc),
+                        }
                     )
-                    ragflow_entry["status"] = "uploaded"
-                    ragflow_documents.append(ragflow_entry)
-                    continue
-
-                updated_document_count += 1
-                parse_document_ids.append(uploaded_document["id"])
-                ragflow_entry["status"] = "updated"
-                ragflow_entry["meta_fields"] = update_payload.get("meta_fields", {})
-                ragflow_documents.append(ragflow_entry)
-
-            imported_documents.append(
-                {
-                    "fdId": fd_id,
-                    "fdName": fd_name or str(detail_data.get("fdName") or ""),
-                    "saved_dir": portal_document.get("saved_dir"),
-                    "upload_sources": [self._serialize_upload_source(item) for item in upload_sources],
-                    "ragflow_documents": ragflow_documents,
-                }
-            )
 
         parse_result = None
         if normalized["parse_after_upload"] and parse_document_ids:

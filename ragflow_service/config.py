@@ -7,6 +7,7 @@ from pathlib import Path
 from .exceptions import ConfigError
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+DEFAULT_CONVERSATION_DB_PATH = str((Path(__file__).resolve().parent.parent / "output" / "conversations.sqlite3").resolve())
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,9 @@ class Settings:
     llm_timeout: float = 60.0
     server_host: str = "0.0.0.0"
     server_port: int = 8080
+    conversation_db_path: str = DEFAULT_CONVERSATION_DB_PATH
+    conversation_recent_turns: int = 6
+    conversation_summary_max_chars: int = 4000
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -37,6 +41,24 @@ class Settings:
         llm_timeout_raw = _get_config_value("LLM_TIMEOUT", file_values, default="60", prefer_os_env=prefer_os_env)
         host = _get_config_value("SERVICE_HOST", file_values, default="0.0.0.0", prefer_os_env=prefer_os_env) or "0.0.0.0"
         port_raw = _get_config_value("SERVICE_PORT", file_values, default="8080", prefer_os_env=prefer_os_env)
+        conversation_db_path = _get_config_value(
+            "CONVERSATION_DB_PATH",
+            file_values,
+            default=DEFAULT_CONVERSATION_DB_PATH,
+            prefer_os_env=prefer_os_env,
+        )
+        conversation_recent_turns_raw = _get_config_value(
+            "CONVERSATION_RECENT_TURNS",
+            file_values,
+            default="6",
+            prefer_os_env=prefer_os_env,
+        )
+        conversation_summary_max_chars_raw = _get_config_value(
+            "CONVERSATION_SUMMARY_MAX_CHARS",
+            file_values,
+            default="4000",
+            prefer_os_env=prefer_os_env,
+        )
 
         try:
             timeout = float(timeout_raw)
@@ -53,6 +75,16 @@ class Settings:
         except ValueError as exc:
             raise ConfigError("SERVICE_PORT must be an integer") from exc
 
+        try:
+            conversation_recent_turns = int(conversation_recent_turns_raw)
+        except ValueError as exc:
+            raise ConfigError("CONVERSATION_RECENT_TURNS must be an integer") from exc
+
+        try:
+            conversation_summary_max_chars = int(conversation_summary_max_chars_raw)
+        except ValueError as exc:
+            raise ConfigError("CONVERSATION_SUMMARY_MAX_CHARS must be an integer") from exc
+
         return cls(
             ragflow_base_url=base_url.rstrip("/"),
             ragflow_api_key=api_key,
@@ -63,6 +95,9 @@ class Settings:
             llm_timeout=llm_timeout,
             server_host=host,
             server_port=port,
+            conversation_db_path=conversation_db_path,
+            conversation_recent_turns=conversation_recent_turns,
+            conversation_summary_max_chars=conversation_summary_max_chars,
         )
 
     def with_overrides(
@@ -77,6 +112,9 @@ class Settings:
         llm_timeout: float | None = None,
         server_host: str | None = None,
         server_port: int | None = None,
+        conversation_db_path: str | None = None,
+        conversation_recent_turns: int | None = None,
+        conversation_summary_max_chars: int | None = None,
     ) -> "Settings":
         return replace(
             self,
@@ -89,6 +127,15 @@ class Settings:
             llm_timeout=llm_timeout if llm_timeout is not None else self.llm_timeout,
             server_host=server_host or self.server_host,
             server_port=server_port if server_port is not None else self.server_port,
+            conversation_db_path=conversation_db_path if conversation_db_path is not None else self.conversation_db_path,
+            conversation_recent_turns=(
+                conversation_recent_turns if conversation_recent_turns is not None else self.conversation_recent_turns
+            ),
+            conversation_summary_max_chars=(
+                conversation_summary_max_chars
+                if conversation_summary_max_chars is not None
+                else self.conversation_summary_max_chars
+            ),
         )
 
     def require_ragflow(self) -> "Settings":

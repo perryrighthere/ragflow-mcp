@@ -49,6 +49,28 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.llm_model, "test-model")
         self.assertEqual(settings.llm_timeout, 30.0)
         self.assertEqual(settings.server_port, 9090)
+        self.assertTrue(settings.conversation_db_path.endswith("conversations.sqlite3"))
+        self.assertEqual(settings.conversation_recent_turns, 6)
+        self.assertEqual(settings.conversation_summary_max_chars, 4000)
+
+    def test_from_env_reads_conversation_settings(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            db_path = Path(tmpdir) / "conversation-db.sqlite3"
+            env_path.write_text(
+                f"CONVERSATION_DB_PATH={db_path}\n"
+                "CONVERSATION_RECENT_TURNS=4\n"
+                "CONVERSATION_SUMMARY_MAX_CHARS=1500\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("ragflow_service.config.ENV_FILE", env_path):
+                    settings = Settings.from_env()
+
+        self.assertEqual(settings.conversation_db_path, str(db_path))
+        self.assertEqual(settings.conversation_recent_turns, 4)
+        self.assertEqual(settings.conversation_summary_max_chars, 1500)
 
     def test_os_env_overrides_dotenv(self):
         with tempfile.TemporaryDirectory() as tmpdir:

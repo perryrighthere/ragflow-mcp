@@ -1,4 +1,5 @@
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,28 +11,65 @@ from ragflow_service.ragflow_client import UpstreamResponse
 
 
 class FakeKnowledgePortalService:
-    def __init__(self, result):
+    def __init__(self, result, *, events=None):
         self.result = result
         self.calls = []
+        self.cleanup_calls = []
+        self.events = events if events is not None else []
         self._validator = KnowledgePortalSyncService()
 
     def sync_documents(self, payload):
         self.calls.append(payload)
         return self.result
 
+    def start_sync(self, payload, *, collect_documents=True):
+        self.calls.append(payload)
+        summary = {
+            "base_url": self.result.get("base_url"),
+            "output_dir": self.result.get("output_dir"),
+            "total_documents": self.result.get("total_documents", 0),
+            "downloaded_document_count": 0,
+            "downloaded_file_count": 0,
+            "max_download_files": self.result.get("max_download_files"),
+            "download_limit_reached": self.result.get("download_limit_reached", False),
+            "documents": [],
+            "errors": list(self.result.get("errors") or []),
+        }
+
+        def iterator():
+            for document in self.result.get("documents") or []:
+                self.events.append(f"yield:{document['fdId']}")
+                summary["downloaded_document_count"] += 1
+                summary["downloaded_file_count"] += len(document.get("downloaded_files") or [])
+                if collect_documents:
+                    summary["documents"].append(document)
+                yield document
+                self.events.append(f"resumed:{document['fdId']}")
+
+        return summary, iterator()
+
     def _validate_payload(self, payload):
         return self._validator._validate_payload(payload)
 
+    def cleanup_document_cache(self, portal_document):
+        self.cleanup_calls.append(portal_document["fdId"])
+        self.events.append(f"cleanup:{portal_document['fdId']}")
+        saved_dir = Path(portal_document.get("saved_dir") or "")
+        if saved_dir.is_dir():
+            shutil.rmtree(saved_dir)
+
 
 class FakeRagflowClient:
-    def __init__(self):
+    def __init__(self, *, events=None):
         self.upload_calls = []
         self.update_calls = []
         self.parse_calls = []
         self._next_id = 1
+        self.events = events if events is not None else []
 
     def upload_documents(self, dataset_id, files):
         self.upload_calls.append((dataset_id, files))
+        self.events.append("upload:" + ",".join(file.filename for file in files))
         data = []
         for file in files:
             data.append(
@@ -51,10 +89,12 @@ class FakeRagflowClient:
 
     def update_document(self, dataset_id, document_id, payload):
         self.update_calls.append((dataset_id, document_id, payload))
+        self.events.append(f"update:{document_id}")
         return UpstreamResponse(status_code=200, payload={"code": 0, "data": {"id": document_id}})
 
     def parse_documents(self, dataset_id, payload):
         self.parse_calls.append((dataset_id, payload))
+        self.events.append("parse:" + ",".join(payload.get("document_ids") or []))
         return UpstreamResponse(status_code=200, payload={"code": 0})
 
 
@@ -108,6 +148,7 @@ class RagflowDocumentServiceTests(unittest.TestCase):
             content_path = second_dir / "content.md"
             content_path.write_text("# 纯正文文档\n\n正文", encoding="utf-8")
 
+            events = []
             portal_service = FakeKnowledgePortalService(
                 {
                     "base_url": "https://km.seres.cn",
@@ -143,9 +184,10 @@ class RagflowDocumentServiceTests(unittest.TestCase):
                         },
                     ],
                     "errors": [],
-                }
+                },
+                events=events,
             )
-            ragflow_client = FakeRagflowClient()
+            ragflow_client = FakeRagflowClient(events=events)
             service = RagflowDocumentService(ragflow_client, portal_service)
 
             result = service.import_knowledge_portal_documents(
@@ -185,10 +227,29 @@ class RagflowDocumentServiceTests(unittest.TestCase):
                     "include_cover_image": False,
                 },
             )
+            self.assertEqual(
+                events,
+                [
+                    "yield:doc-1",
+                    "upload:manual.pdf",
+                    "update:rf-doc-1",
+                    "cleanup:doc-1",
+                    "resumed:doc-1",
+                    "yield:doc-2",
+                    "upload:content.md",
+                    "update:rf-doc-2",
+                    "cleanup:doc-2",
+                    "resumed:doc-2",
+                    "parse:rf-doc-1,rf-doc-2",
+                ],
+            )
             self.assertEqual(len(ragflow_client.upload_calls), 2)
             self.assertEqual(ragflow_client.upload_calls[0][0], "kb_123")
             self.assertEqual(ragflow_client.upload_calls[0][1][0].filename, "manual.pdf")
             self.assertEqual(ragflow_client.upload_calls[1][1][0].filename, "content.md")
+            self.assertFalse(first_dir.exists())
+            self.assertFalse(second_dir.exists())
+            self.assertEqual(portal_service.cleanup_calls, ["doc-1", "doc-2"])
 
             first_update = ragflow_client.update_calls[0]
             self.assertEqual(first_update[0], "kb_123")

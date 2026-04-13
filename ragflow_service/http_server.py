@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
+from .conversation_store import ConversationStore
 from .document_service import RagflowDocumentService
 from .exceptions import ConfigError, KnowledgePortalAPIError, LLMAPIError, RagflowAPIError, ValidationError
 from .knowledge_portal_service import KnowledgePortalSyncService
@@ -14,12 +15,14 @@ from .ragflow_client import FileUpload, RagflowClient, UpstreamResponse
 
 try:
     import uvicorn
+    from fastapi.concurrency import run_in_threadpool
     from fastapi import FastAPI, File, Query, Request, UploadFile
     from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, ConfigDict, Field
 except ImportError as exc:  # pragma: no cover - exercised only when deps are missing
     uvicorn = None
+    run_in_threadpool = None
     FastAPI = None
     File = Query = Request = UploadFile = None
     FileResponse = JSONResponse = PlainTextResponse = RedirectResponse = Response = StreamingResponse = None
@@ -95,6 +98,16 @@ if FASTAPI_IMPORT_ERROR is None:
         model_config = ConfigDict(extra="allow")
 
 
+    class ConversationAnswerRequest(QuestionAnswerRequest):
+        user_id: str = Field(..., description="Logical user ID used to isolate conversation history.")
+        conversation_id: str | None = Field(
+            default=None,
+            description="Conversation ID. Omit it to create a new conversation automatically.",
+        )
+
+        model_config = ConfigDict(extra="allow")
+
+
     class KnowledgePortalSyncRequest(BaseModel):
         base_url: str = Field(..., description="Knowledge portal base URL, for example https://km.seres.cn")
         community_id: str = Field(..., description="Knowledge portal access key")
@@ -141,7 +154,7 @@ if FASTAPI_IMPORT_ERROR is None:
 
         model_config = ConfigDict(extra="forbid")
 else:  # pragma: no cover - import guard only
-    RetrievalRequest = DocumentUpdateRequest = ParseDocumentsRequest = QuestionAnswerRequest = KnowledgePortalSyncRequest = KnowledgePortalImportRequest = object
+    RetrievalRequest = DocumentUpdateRequest = ParseDocumentsRequest = QuestionAnswerRequest = ConversationAnswerRequest = KnowledgePortalSyncRequest = KnowledgePortalImportRequest = object
 
 
 class ServiceRuntime:
@@ -150,6 +163,7 @@ class ServiceRuntime:
         self._client = self._build_client(settings)
         self._llm_client = self._build_llm_client(settings)
         self._knowledge_portal_service = self._build_knowledge_portal_service(settings)
+        self._conversation_store = self._build_conversation_store(settings)
 
     def get_client(self) -> RagflowClient:
         if self._client is None:
@@ -178,6 +192,9 @@ class ServiceRuntime:
     def get_knowledge_portal_service(self) -> KnowledgePortalSyncService:
         return self._knowledge_portal_service
 
+    def get_conversation_store(self) -> ConversationStore:
+        return self._conversation_store
+
     def _build_client(self, settings: Settings) -> RagflowClient | None:
         if not settings.is_ragflow_configured():
             return None
@@ -199,6 +216,13 @@ class ServiceRuntime:
 
     def _build_knowledge_portal_service(self, settings: Settings) -> KnowledgePortalSyncService:
         return KnowledgePortalSyncService(default_timeout=settings.request_timeout)
+
+    def _build_conversation_store(self, settings: Settings) -> ConversationStore:
+        return ConversationStore(
+            settings.conversation_db_path,
+            recent_turn_window=settings.conversation_recent_turns,
+            summary_max_chars=settings.conversation_summary_max_chars,
+        )
 
 
 def create_application(settings: Settings | None = None):
@@ -258,20 +282,26 @@ def create_application(settings: Settings | None = None):
     @app.get("/v1/system/healthz", tags=["RAGFlow Raw APIs"])
     async def healthz() -> Response:
         client = runtime.get_client()
-        upstream = client.healthz()
+        upstream = await run_in_threadpool(client.healthz)
         return _response_from_upstream(upstream)
 
     @app.post("/api/v1/retrieval", tags=["RAGFlow Raw APIs"])
     async def retrieve_chunks(payload: RetrievalRequest) -> Response:
         client = runtime.get_client()
-        upstream = client.retrieve_chunks(payload.model_dump(exclude_none=True))
+        upstream = await run_in_threadpool(client.retrieve_chunks, payload.model_dump(exclude_none=True))
         return _response_from_upstream(upstream)
 
     @app.post("/api/v1/qa/answer/stream", tags=["Knowledge Base QA"])
     async def answer_question_stream(payload: QuestionAnswerRequest) -> StreamingResponse:
         request_payload = payload.model_dump(exclude_none=True)
         request_payload.pop("stream", None)
-        return _build_qa_streaming_response(runtime, request_payload)
+        return await run_in_threadpool(_build_qa_streaming_response, runtime, request_payload)
+
+    @app.post("/api/v1/qa/conversations/answer/stream", tags=["Knowledge Base QA"])
+    async def answer_question_with_conversation_stream(payload: ConversationAnswerRequest) -> StreamingResponse:
+        request_payload = payload.model_dump(exclude_none=True)
+        request_payload.pop("stream", None)
+        return await run_in_threadpool(_build_conversation_qa_streaming_response, runtime, request_payload)
 
     @app.get("/api/v1/qa/prompt-templates", tags=["Knowledge Base QA"])
     async def get_prompt_templates() -> JSONResponse:
@@ -280,13 +310,13 @@ def create_application(settings: Settings | None = None):
     @app.post("/api/v1/knowledge-portal/documents/sync", tags=["Knowledge Portal"])
     async def sync_knowledge_portal_documents(payload: KnowledgePortalSyncRequest) -> JSONResponse:
         service = runtime.get_knowledge_portal_service()
-        result = service.sync_documents(payload.model_dump(exclude_none=True))
+        result = await run_in_threadpool(service.sync_documents, payload.model_dump(exclude_none=True))
         return JSONResponse(status_code=200, content={"code": 0, "data": result})
 
     @app.post("/api/v1/knowledge-portal/documents/import", tags=["Knowledge Portal"])
     async def import_knowledge_portal_documents(payload: KnowledgePortalImportRequest) -> JSONResponse:
         service = runtime.build_document_service()
-        result = service.import_knowledge_portal_documents(payload.model_dump(exclude_none=True))
+        result = await run_in_threadpool(service.import_knowledge_portal_documents, payload.model_dump(exclude_none=True))
         return JSONResponse(status_code=200, content={"code": 0, "data": result})
 
     @app.get("/api/v1/datasets/{dataset_id}/documents", tags=["RAGFlow Raw APIs"])
@@ -316,7 +346,7 @@ def create_application(settings: Settings | None = None):
                 "id": id,
             }
         )
-        upstream = client.list_documents(dataset_id, query)
+        upstream = await run_in_threadpool(client.list_documents, dataset_id, query)
         return _response_from_upstream(upstream)
 
     @app.post("/api/v1/datasets/{dataset_id}/documents", tags=["RAGFlow Raw APIs"])
@@ -331,19 +361,19 @@ def create_application(settings: Settings | None = None):
                     content_type=file.content_type,
                 )
             )
-        upstream = client.upload_documents(dataset_id, uploads)
+        upstream = await run_in_threadpool(client.upload_documents, dataset_id, uploads)
         return _response_from_upstream(upstream)
 
     @app.put("/api/v1/datasets/{dataset_id}/documents/{document_id}", tags=["RAGFlow Raw APIs"])
     async def update_document(dataset_id: str, document_id: str, payload: DocumentUpdateRequest) -> Response:
         client = runtime.get_client()
-        upstream = client.update_document(dataset_id, document_id, payload.model_dump())
+        upstream = await run_in_threadpool(client.update_document, dataset_id, document_id, payload.model_dump())
         return _response_from_upstream(upstream)
 
     @app.post("/api/v1/datasets/{dataset_id}/chunks", tags=["RAGFlow Raw APIs"])
     async def parse_documents(dataset_id: str, payload: ParseDocumentsRequest) -> Response:
         client = runtime.get_client()
-        upstream = client.parse_documents(dataset_id, payload.model_dump(exclude_none=True))
+        upstream = await run_in_threadpool(client.parse_documents, dataset_id, payload.model_dump(exclude_none=True))
         return _response_from_upstream(upstream)
 
     return app
@@ -432,6 +462,159 @@ def _build_qa_streaming_response(runtime: ServiceRuntime, request_payload: dict[
     )
 
 
+def _build_conversation_qa_streaming_response(runtime: ServiceRuntime, request_payload: dict[str, Any]) -> StreamingResponse:
+    user_id = str(request_payload.get("user_id", "")).strip()
+    if not user_id:
+        raise ValidationError("user_id is required")
+
+    raw_conversation_id = request_payload.get("conversation_id")
+    conversation_id = str(raw_conversation_id).strip() if raw_conversation_id not in (None, "") else None
+    conversation_state = runtime.get_conversation_store().get_or_create_conversation(
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+
+    qa_payload = dict(request_payload)
+    qa_payload.pop("user_id", None)
+    qa_payload.pop("conversation_id", None)
+
+    use_retrieval = "dataset_ids" in qa_payload and qa_payload.get("dataset_ids") is not None
+    qa_service = runtime.build_qa_service(use_retrieval=use_retrieval)
+    llm_client = runtime.get_llm_client()
+    prepared = qa_service.prepare_answer(
+        qa_payload,
+        history_summary=conversation_state.summary,
+        history_messages=[
+            {"role": message.role, "content": message.content}
+            for message in conversation_state.recent_messages
+        ],
+    )
+
+    def stream() -> Any:
+        history_messages = [
+            {"role": message.role, "content": message.content}
+            for message in conversation_state.recent_messages
+        ]
+        context_payload = {
+            "user_id": user_id,
+            "conversation_id": conversation_state.conversation_id,
+            "conversation_title": conversation_state.title,
+            "conversation_created": conversation_state.created,
+            "history_summary": conversation_state.summary,
+            "history_messages": history_messages,
+            "question": prepared.question,
+            "sources": prepared.sources,
+            "referenced_documents": prepared.referenced_documents,
+            "source_count": prepared.source_count,
+            "retrieval_total": prepared.retrieval_total,
+            "llm_messages": prepared.llm_messages,
+            "prompt_templates": prepared.prompt_templates,
+            "model": llm_client.model if prepared.llm_messages else None,
+        }
+        yield _json_line({"type": "context", "data": context_payload})
+
+        if prepared.uses_retrieval and not prepared.sources:
+            final_answer = NO_SOURCES_ANSWER
+            stored_state = runtime.get_conversation_store().append_turn(
+                user_id=user_id,
+                conversation_id=conversation_state.conversation_id,
+                user_message=prepared.question,
+                assistant_message=final_answer,
+            )
+            conversation_title = conversation_state.title
+            if conversation_state.created and not conversation_title:
+                conversation_title = _generate_conversation_title(
+                    qa_service=qa_service,
+                    question=prepared.question,
+                    answer=final_answer,
+                    fallback_title=prepared.question,
+                )
+                stored_state = runtime.get_conversation_store().set_title(
+                    user_id=user_id,
+                    conversation_id=conversation_state.conversation_id,
+                    title=conversation_title,
+                )
+            yield _json_line(
+                {
+                    "type": "done",
+                    "data": {
+                        **prepared.to_response(answer=final_answer, model=None, usage=None),
+                        "user_id": user_id,
+                        "conversation_id": conversation_state.conversation_id,
+                        "conversation_title": stored_state.title or conversation_title,
+                    },
+                }
+            )
+            return
+
+        answer_parts: list[str] = []
+        usage: dict[str, Any] | None = None
+        model_name = llm_client.model
+        try:
+            for chunk in llm_client.stream_chat_completion(
+                prepared.llm_messages,
+                temperature=qa_payload.get("temperature"),
+                max_tokens=qa_payload.get("max_tokens"),
+            ):
+                chunk_model = chunk.get("model")
+                if isinstance(chunk_model, str) and chunk_model:
+                    model_name = chunk_model
+
+                chunk_usage = chunk.get("usage")
+                if isinstance(chunk_usage, dict):
+                    usage = chunk_usage
+
+                delta = llm_client.extract_stream_delta(chunk)
+                if not delta:
+                    continue
+
+                answer_parts.append(delta)
+                yield _json_line({"type": "answer_delta", "delta": delta})
+
+            answer = "".join(answer_parts).strip()
+            if not answer:
+                raise LLMAPIError("LLM response does not contain assistant text.", status_code=502)
+
+            stored_state = runtime.get_conversation_store().append_turn(
+                user_id=user_id,
+                conversation_id=conversation_state.conversation_id,
+                user_message=prepared.question,
+                assistant_message=answer,
+            )
+            conversation_title = conversation_state.title
+            if conversation_state.created and not conversation_title:
+                conversation_title = _generate_conversation_title(
+                    qa_service=qa_service,
+                    question=prepared.question,
+                    answer=answer,
+                    fallback_title=prepared.question,
+                )
+                stored_state = runtime.get_conversation_store().set_title(
+                    user_id=user_id,
+                    conversation_id=conversation_state.conversation_id,
+                    title=conversation_title,
+                )
+            yield _json_line(
+                {
+                    "type": "done",
+                    "data": {
+                        **prepared.to_response(answer=answer, model=model_name, usage=usage),
+                        "user_id": user_id,
+                        "conversation_id": conversation_state.conversation_id,
+                        "conversation_title": stored_state.title or conversation_title,
+                    },
+                }
+            )
+        except Exception as exc:
+            yield _json_line({"type": "error", "message": str(exc) or "Unexpected streaming error."})
+
+    return StreamingResponse(
+        stream(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 def _response_from_upstream(upstream: UpstreamResponse) -> Response:
     if isinstance(upstream.payload, (dict, list)):
         return JSONResponse(status_code=upstream.status_code, content=upstream.payload)
@@ -444,3 +627,16 @@ def _drop_none_values(values: dict[str, Any]) -> dict[str, Any]:
 
 def _json_line(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False) + "\n"
+
+
+def _generate_conversation_title(
+    *,
+    qa_service: KnowledgeBaseQAService,
+    question: str,
+    answer: str,
+    fallback_title: str,
+) -> str:
+    try:
+        return qa_service.generate_conversation_title(question=question, answer=answer)
+    except Exception:
+        return " ".join(str(fallback_title or "").split())[:80]

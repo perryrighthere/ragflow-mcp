@@ -1,4 +1,5 @@
 import json
+import tempfile
 import unittest
 
 from fastapi.testclient import TestClient
@@ -93,6 +94,9 @@ class FakeLLMClient:
         ]
 
     def create_chat_completion(self, messages, *, temperature=None, max_tokens=None):
+        content = "五看首轮问答"
+        if messages and not str(messages[0].get("content", "")).startswith("你是一个对话标题生成助手"):
+            content = "五看包括看行业、看市场、看用户、看竞争、看自己。"
         self.calls.append(
             {
                 "messages": messages,
@@ -106,7 +110,7 @@ class FakeLLMClient:
                 {
                     "message": {
                         "role": "assistant",
-                        "content": "五看包括看行业、看市场、看用户、看竞争、看自己。",
+                        "content": content,
                     }
                 }
             ],
@@ -176,6 +180,7 @@ class FakeDocumentService:
 
 class HttpServerApiTests(unittest.TestCase):
     def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
         app = create_application(
             Settings(
                 ragflow_base_url="http://ragflow.local:9380",
@@ -187,6 +192,9 @@ class HttpServerApiTests(unittest.TestCase):
                 llm_timeout=60.0,
                 server_host="127.0.0.1",
                 server_port=8080,
+                conversation_db_path=f"{self.tempdir.name}/conversations.sqlite3",
+                conversation_recent_turns=1,
+                conversation_summary_max_chars=1000,
             )
         )
         app.state.runtime._client = FakeClient()
@@ -198,6 +206,9 @@ class HttpServerApiTests(unittest.TestCase):
         self.fake_client = app.state.runtime._client
         self.fake_llm = app.state.runtime._llm_client
         self.fake_knowledge_portal = app.state.runtime._knowledge_portal_service
+
+    def tearDown(self):
+        self.tempdir.cleanup()
 
     def test_root_serves_console_page(self):
         response = self.client.get("/")
@@ -476,6 +487,7 @@ class HttpServerApiTests(unittest.TestCase):
                 llm_timeout=60.0,
                 server_host="127.0.0.1",
                 server_port=8080,
+                conversation_db_path=f"{self.tempdir.name}/conversation-lite.sqlite3",
             )
         )
         app.state.runtime._llm_client = FakeLLMClient()
@@ -492,6 +504,103 @@ class HttpServerApiTests(unittest.TestCase):
         self.assertEqual(events[-1]["type"], "done")
         self.assertEqual(events[-1]["data"]["source_count"], 0)
         self.assertEqual(events[-1]["data"]["referenced_documents"], [])
+
+    def test_conversation_stream_route_persists_history_for_same_user(self):
+        self.fake_client.qa_mode = True
+
+        with self.client.stream(
+            "POST",
+            "/api/v1/qa/conversations/answer/stream",
+            json={
+                "user_id": "user-1",
+                "question": "第一轮问题是什么？",
+                "dataset_ids": ["kb_123"],
+            },
+        ) as response:
+            self.assertEqual(response.status_code, 200)
+            first_events = [json.loads(line) for line in response.iter_lines() if line]
+
+        conversation_id = first_events[-1]["data"]["conversation_id"]
+        self.assertTrue(conversation_id)
+        self.assertEqual(first_events[0]["data"]["history_messages"], [])
+        self.assertEqual(first_events[0]["data"]["conversation_title"], "")
+        self.assertEqual(first_events[-1]["data"]["user_id"], "user-1")
+        self.assertEqual(first_events[-1]["data"]["conversation_title"], "五看首轮问答")
+
+        with self.client.stream(
+            "POST",
+            "/api/v1/qa/conversations/answer/stream",
+            json={
+                "user_id": "user-1",
+                "conversation_id": conversation_id,
+                "question": "第二轮问题是什么？",
+                "dataset_ids": ["kb_123"],
+            },
+        ) as response:
+            self.assertEqual(response.status_code, 200)
+            second_events = [json.loads(line) for line in response.iter_lines() if line]
+
+        second_messages = self.fake_llm.stream_calls[-1]["messages"]
+        self.assertEqual(second_events[0]["data"]["conversation_id"], conversation_id)
+        self.assertEqual(second_events[0]["data"]["conversation_title"], "五看首轮问答")
+        self.assertEqual(second_events[0]["data"]["history_summary"], "")
+        self.assertIn({"role": "user", "content": "第一轮问题是什么？"}, second_messages)
+        self.assertIn(
+            {"role": "assistant", "content": "五看包括看行业、看市场、看用户、看竞争、看自己。"},
+            second_messages,
+        )
+        self.assertTrue(self.fake_llm.calls[-1]["messages"][0]["content"].startswith("你是一个对话标题生成助手。"))
+
+        with self.client.stream(
+            "POST",
+            "/api/v1/qa/conversations/answer/stream",
+            json={
+                "user_id": "user-1",
+                "conversation_id": conversation_id,
+                "question": "第三轮问题是什么？",
+                "dataset_ids": ["kb_123"],
+            },
+        ) as response:
+            self.assertEqual(response.status_code, 200)
+            third_events = [json.loads(line) for line in response.iter_lines() if line]
+
+        third_messages = self.fake_llm.stream_calls[-1]["messages"]
+        self.assertTrue(third_events[0]["data"]["history_summary"])
+        self.assertIn("第一轮问题是什么", third_events[0]["data"]["history_summary"])
+        self.assertNotIn({"role": "user", "content": "第一轮问题是什么？"}, third_messages)
+        self.assertIn({"role": "user", "content": "第二轮问题是什么？"}, third_messages)
+
+    def test_conversation_stream_route_rejects_other_users_conversation_id(self):
+        self.fake_client.qa_mode = True
+
+        with self.client.stream(
+            "POST",
+            "/api/v1/qa/conversations/answer/stream",
+            json={
+                "user_id": "user-1",
+                "conversation_id": "shared-conv",
+                "question": "第一轮问题是什么？",
+                "dataset_ids": ["kb_123"],
+            },
+        ) as response:
+            self.assertEqual(response.status_code, 200)
+            _ = [json.loads(line) for line in response.iter_lines() if line]
+
+        response = self.client.post(
+            "/api/v1/qa/conversations/answer/stream",
+            json={
+                "user_id": "user-2",
+                "conversation_id": "shared-conv",
+                "question": "这个会失败吗？",
+                "dataset_ids": ["kb_123"],
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            {"detail": "conversation_id does not belong to the provided user_id"},
+        )
 
 
 if __name__ == "__main__":

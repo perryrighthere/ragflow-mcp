@@ -33,6 +33,22 @@ DEFAULT_DIRECT_SYSTEM_PROMPT = """
 """.strip()
 
 DEFAULT_DIRECT_USER_PROMPT_TEMPLATE = "{{question}}".strip()
+DEFAULT_TITLE_SYSTEM_PROMPT = """
+你是一个对话标题生成助手。
+请基于用户首轮问题和助手首轮回答，生成一个简短、清晰、便于列表展示的中文标题。
+要求：
+1. 只输出标题本身，不要解释，不要引号，不要编号。
+2. 尽量控制在 18 个汉字以内；若是英文，尽量控制在 8 个单词以内。
+3. 标题要准确概括主题，避免空泛词语，例如“新对话”或“问题咨询”。
+""".strip()
+
+DEFAULT_TITLE_USER_PROMPT_TEMPLATE = """
+用户首轮问题：
+{{question}}
+
+助手首轮回答：
+{{answer}}
+""".strip()
 
 NO_SOURCES_ANSWER = "知识库中没有检索到可用于回答当前问题的内容，请尝试补充关键词或缩小范围。"
 
@@ -110,7 +126,13 @@ class KnowledgeBaseQAService:
             usage=llm_payload.get("usage"),
         )
 
-    def prepare_answer(self, payload: dict[str, Any]) -> PreparedAnswer:
+    def prepare_answer(
+        self,
+        payload: dict[str, Any],
+        *,
+        history_summary: str = "",
+        history_messages: list[dict[str, str]] | None = None,
+    ) -> PreparedAnswer:
         question = str(payload.get("question", "")).strip()
         if not question:
             raise ValidationError("question is required")
@@ -127,6 +149,8 @@ class KnowledgeBaseQAService:
                     question,
                     [],
                     prompt_templates=prompt_templates,
+                    history_summary=history_summary,
+                    history_messages=history_messages,
                 ),
                 prompt_templates=prompt_templates,
                 uses_retrieval=False,
@@ -162,10 +186,38 @@ class KnowledgeBaseQAService:
                 retrieval_response.payload,
                 fallback=len(sources),
             ),
-            llm_messages=self._build_messages(question, sources, prompt_templates=prompt_templates),
+            llm_messages=self._build_messages(
+                question,
+                sources,
+                prompt_templates=prompt_templates,
+                history_summary=history_summary,
+                history_messages=history_messages,
+            ),
             prompt_templates=prompt_templates,
             uses_retrieval=True,
         )
+
+    def generate_conversation_title(self, *, question: str, answer: str) -> str:
+        normalized_question = str(question or "").strip()
+        normalized_answer = str(answer or "").strip()
+        if not normalized_question:
+            raise ValidationError("question is required")
+        if not normalized_answer:
+            raise ValidationError("answer is required")
+
+        messages = [
+            {"role": "system", "content": DEFAULT_TITLE_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": DEFAULT_TITLE_USER_PROMPT_TEMPLATE.replace("{{question}}", normalized_question).replace(
+                    "{{answer}}",
+                    normalized_answer,
+                ),
+            },
+        ]
+        payload = self._llm_client.create_chat_completion(messages, temperature=0.2, max_tokens=32)
+        raw_title = self._llm_client.extract_message_content(payload)
+        return self._normalize_generated_title(raw_title, fallback_question=normalized_question)
 
     def _should_use_retrieval(self, payload: dict[str, Any]) -> bool:
         return "dataset_ids" in payload and payload.get("dataset_ids") is not None
@@ -296,6 +348,8 @@ class KnowledgeBaseQAService:
         sources: list[dict[str, str | int]],
         *,
         prompt_templates: dict[str, str] | None = None,
+        history_summary: str = "",
+        history_messages: list[dict[str, str]] | None = None,
     ) -> list[dict[str, str]]:
         prompt_templates = prompt_templates or get_default_prompt_templates()
         snippets: list[str] = []
@@ -317,10 +371,28 @@ class KnowledgeBaseQAService:
             knowledge_snippets=snippets_text,
         )
 
-        return [
-            {"role": "system", "content": prompt_templates["system_prompt"]},
-            {"role": "user", "content": user_message},
-        ]
+        messages: list[dict[str, str]] = [{"role": "system", "content": prompt_templates["system_prompt"]}]
+        normalized_history_summary = str(history_summary or "").strip()
+        if normalized_history_summary:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "以下是当前会话更早历史的摘要，仅用于延续上下文，不要机械复述给用户：\n"
+                        f"{normalized_history_summary}"
+                    ),
+                }
+            )
+
+        for message in history_messages or []:
+            role = str(message.get("role", "")).strip()
+            content = str(message.get("content", "")).strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            messages.append({"role": role, "content": content})
+
+        messages.append({"role": "user", "content": user_message})
+        return messages
 
     def _resolve_prompt_templates(self, payload: dict[str, Any], *, uses_retrieval: bool) -> dict[str, str]:
         defaults = get_default_prompt_templates(uses_retrieval=uses_retrieval)
@@ -338,6 +410,14 @@ class KnowledgeBaseQAService:
 
     def _render_user_prompt(self, template: str, *, question: str, knowledge_snippets: str) -> str:
         return template.replace("{{question}}", question).replace("{{knowledge_snippets}}", knowledge_snippets)
+
+    def _normalize_generated_title(self, title: str, *, fallback_question: str) -> str:
+        normalized = str(title or "").strip().splitlines()[0].strip() if str(title or "").strip() else ""
+        normalized = normalized.strip("\"'` ")
+        normalized = " ".join(normalized.split())
+        if not normalized:
+            normalized = fallback_question
+        return normalized[:80]
 
     def _extract_retrieval_total(self, payload: Any, *, fallback: int = 0) -> int:
         if not isinstance(payload, dict):

@@ -137,6 +137,7 @@ docker run --rm \
 - `GET /v1/system/healthz`
 - `POST /api/v1/retrieval`
 - `POST /api/v1/qa/answer/stream`
+- `POST /api/v1/qa/conversations/answer/stream`
 - `POST /api/v1/knowledge-portal/documents/sync`
 - `POST /api/v1/knowledge-portal/documents/import`
 - `GET /api/v1/datasets/{dataset_id}/documents`
@@ -187,6 +188,60 @@ curl -N --request POST \
     "temperature": 0.2
   }'
 ```
+
+## 带历史会话的问答接口
+
+接口：`POST /api/v1/qa/conversations/answer/stream`
+
+行为：
+
+- 基于 SQLite 持久化 `user_id + conversation_id` 的会话历史
+- `user_id` 必填，用于隔离不同用户的历史消息
+- `conversation_id` 可选；不传时自动创建新会话，传入时会继续该会话
+- 服务端会保留最近 `N` 轮原始对话，并把更早的历史压缩进摘要，再与当前问题一起发给 LLM
+- 如果某个 `conversation_id` 已经属于其他 `user_id`，接口会返回 `400`
+
+请求示例：
+
+```bash
+curl -N --request POST \
+  --url http://127.0.0.1:8080/api/v1/qa/conversations/answer/stream \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "user_id": "user_001",
+    "question": "五看是什么？",
+    "dataset_ids": ["kb_123"]
+  }'
+```
+
+续聊示例：
+
+```bash
+curl -N --request POST \
+  --url http://127.0.0.1:8080/api/v1/qa/conversations/answer/stream \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "user_id": "user_001",
+    "conversation_id": "b01eed84b85611efa0e90242ac120005",
+    "question": "那六定呢？",
+    "dataset_ids": ["kb_123"]
+  }'
+```
+
+说明：
+
+- 返回流同样是 `context`、`answer_delta`、`done`、`error`
+- `context` 和最终 `done` 数据中会包含 `user_id`、`conversation_id`
+- 新建会话的首轮回答完成后，服务端会额外调用一次 LLM 生成 `conversation_title`
+- `context.data.history_summary` 展示被压缩后的较早历史摘要
+- `context.data.history_messages` 展示当前保留在窗口中的最近几轮原始消息
+- `done.data.conversation_title` 为当前会话标题；后续续聊时会在 `context` 中直接返回已保存标题
+
+相关环境变量：
+
+- `CONVERSATION_DB_PATH`：SQLite 文件路径，默认 `output/conversations.sqlite3`
+- `CONVERSATION_RECENT_TURNS`：保留的最近原始轮数，默认 `6`
+- `CONVERSATION_SUMMARY_MAX_CHARS`：历史摘要最大字符数，默认 `4000`
 
 ## 知识门户文档同步
 
@@ -252,10 +307,12 @@ curl --request POST \
 行为：
 
 - 先复用知识门户同步流程，拉取文档详情、生成 `content.md`，并按需下载附件
+- 导入按文档流式执行：单个文档准备完成后会立即上传到 RAGFlow，而不是等待全部文档下载完再统一上传
 - 默认上传 `fdFile` 中的原始附件，不上传封面图；若当前文档没有可上传的二进制文件，则回退上传 `content.md`
 - 每个上传到 RAGFlow 的文件都会再调用一次文档更新接口，批量写入 `document_update`
 - `document_update.meta_fields` 会自动合并一组知识门户来源标签，例如 `knowledge_portal_fd_id`、`knowledge_portal_fd_name`、`knowledge_portal_fd_no`、`knowledge_portal_file_kind`、`knowledge_portal_file_id`、`knowledge_portal_file_name`
 - 当 `parse_after_upload=true` 时，所有更新成功的 RAGFlow 文档会在最后统一触发一次批量解析
+- 单个文档处理完成后，会删除该文档在本地的暂存目录和附件缓存
 - 返回值同时包含知识门户下载摘要、RAGFlow 导入摘要、逐文档上传结果和错误列表，便于排查部分成功/部分失败的场景
 
 ## 代码结构
