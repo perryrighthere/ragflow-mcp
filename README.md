@@ -30,6 +30,7 @@ python main.py serve
 
 - `http://127.0.0.1:8080/`
 - `http://127.0.0.1:8080/docs`
+- 完整接口文档：[`docs/service-api.md`](docs/service-api.md)
 
 ## 常用命令
 
