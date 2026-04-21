@@ -153,6 +153,36 @@ class KnowledgePortalSyncServiceTests(unittest.TestCase):
             self.assertEqual(len(fake_client.download_calls), 3)
             self.assertEqual(fake_client.download_calls, ["file-1", "file-2", "file-3"])
 
+    def test_sync_documents_keeps_collecting_details_after_download_limit_is_reached(self):
+        fake_client = FakeKnowledgePortalClient()
+
+        def factory(**kwargs):
+            return fake_client
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = KnowledgePortalSyncService(
+                output_dir=Path(tmpdir),
+                client_factory=factory,
+            )
+            result = service.sync_documents(
+                {
+                    "base_url": "https://km.seres.cn",
+                    "community_id": "community",
+                    "username": "user",
+                    "password": "pass",
+                    "page_size": 2,
+                    "max_download_files": 1,
+                    "include_cover_image": False,
+                }
+            )
+
+            self.assertTrue(result["download_limit_reached"])
+            self.assertEqual(result["downloaded_file_count"], 1)
+            self.assertEqual(len(result["documents"]), 3)
+            self.assertEqual([call["page_no"] for call in fake_client.list_calls], [1, 2])
+            self.assertEqual([call["fd_id"] for call in fake_client.detail_calls], ["doc-1", "doc-2", "doc-3"])
+            self.assertEqual(fake_client.download_calls, ["file-1"])
+
 
 if __name__ == "__main__":
     unittest.main()

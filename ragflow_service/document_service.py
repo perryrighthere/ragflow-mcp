@@ -31,7 +31,16 @@ class RagflowDocumentService:
             "include_attachments": normalized["include_attachments"],
             "include_cover_image": normalized["include_cover_image"],
         }
-        sync_result, synced_documents = self.knowledge_portal_service.start_sync(sync_payload, collect_documents=False)
+        should_stop_sync = None
+        if normalized["max_download_files"] is not None and not normalized["fallback_to_content_markdown"]:
+            def should_stop_sync(summary: dict[str, Any]) -> bool:
+                return bool(summary.get("download_limit_reached"))
+
+        sync_result, synced_documents = self.knowledge_portal_service.start_sync(
+            sync_payload,
+            collect_documents=False,
+            should_stop=should_stop_sync,
+        )
 
         imported_documents: list[dict[str, Any]] = []
         skipped_documents: list[dict[str, Any]] = []
@@ -199,9 +208,15 @@ class RagflowDocumentService:
             raise ValidationError("document_update must be an object")
         document_update = deepcopy(document_update_raw)
 
+        if "parser_confiog" in document_update and "parser_config" not in document_update:
+            raise ValidationError("document_update.parser_confiog is not supported; did you mean parser_config?")
+
         meta_fields = document_update.get("meta_fields")
         if meta_fields is not None and not isinstance(meta_fields, dict):
             raise ValidationError("document_update.meta_fields must be an object")
+        parser_config = document_update.get("parser_config")
+        if parser_config is not None and not isinstance(parser_config, dict):
+            raise ValidationError("document_update.parser_config must be an object")
 
         parse_after_upload = bool(payload.get("parse_after_upload", False))
         fallback_to_content_markdown = bool(payload.get("fallback_to_content_markdown", True))

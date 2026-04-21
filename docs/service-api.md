@@ -741,6 +741,7 @@ curl --request POST \
 - `document_update` 若存在，必须是对象。
 - `document_update.meta_fields` 若存在，必须是对象。
 - `include_attachments=false`、`include_cover_image=false` 且 `fallback_to_content_markdown=false` 时，接口返回 `400`。
+- 当 `fallback_to_content_markdown=false` 且触达 `max_download_files` 上限后，服务会停止继续请求后续门户文档，因为后续文档已不可能再产出可上传文件。
 
 请求示例：
 

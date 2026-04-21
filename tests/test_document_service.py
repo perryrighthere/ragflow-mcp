@@ -22,7 +22,7 @@ class FakeKnowledgePortalService:
         self.calls.append(payload)
         return self.result
 
-    def start_sync(self, payload, *, collect_documents=True):
+    def start_sync(self, payload, *, collect_documents=True, should_stop=None):
         self.calls.append(payload)
         summary = {
             "base_url": self.result.get("base_url"),
@@ -277,6 +277,101 @@ class RagflowDocumentServiceTests(unittest.TestCase):
             self.assertEqual(result["parsed_document_count"], 2)
             self.assertEqual(result["errors"], [])
 
+    def test_import_stops_querying_portal_after_download_limit_when_markdown_fallback_disabled(self):
+        class StreamingPortalClient:
+            def __init__(self):
+                self.list_calls = []
+                self.detail_calls = []
+                self.download_calls = []
+
+            def list_documents(self, *, page_no, page_size, doc_type, fd_cate_id=None, begin_time=None):
+                self.list_calls.append(page_no)
+                if page_no == 1:
+                    return {
+                        "code": 200,
+                        "data": {
+                            "currPage": 1,
+                            "pagesize": 2,
+                            "totalRows": 3,
+                            "data": [
+                                {"fdId": "doc-1", "fdName": "文档一"},
+                                {"fdId": "doc-2", "fdName": "文档二"},
+                            ],
+                        },
+                    }
+                return {
+                    "code": 200,
+                    "data": {
+                        "currPage": 2,
+                        "pagesize": 2,
+                        "totalRows": 3,
+                        "data": [
+                            {"fdId": "doc-3", "fdName": "文档三"},
+                        ],
+                    },
+                }
+
+            def get_document_detail(self, *, fd_id=None, fd_no=None):
+                self.detail_calls.append(fd_id)
+                suffix = fd_id.split("-")[-1]
+                return {
+                    "code": 200,
+                    "data": {
+                        "fdId": fd_id,
+                        "fdName": f"文档{suffix}",
+                        "fdContent": f"正文{suffix}",
+                        "fdFile": [{"fileId": f"file-{suffix}", "fileName": f"file-{suffix}.pdf"}],
+                    },
+                }
+
+            def download_attachment(self, *, file_id):
+                self.download_calls.append(file_id)
+                return type(
+                    "Resp",
+                    (),
+                    {
+                        "payload": f"binary:{file_id}".encode("utf-8"),
+                        "headers": {"Content-Type": "application/octet-stream"},
+                    },
+                )()
+
+        fake_portal_client = StreamingPortalClient()
+
+        def portal_factory(**kwargs):
+            return fake_portal_client
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal_service = KnowledgePortalSyncService(
+                output_dir=Path(tmpdir),
+                client_factory=portal_factory,
+            )
+            ragflow_client = FakeRagflowClient()
+            service = RagflowDocumentService(ragflow_client, portal_service)
+
+            result = service.import_knowledge_portal_documents(
+                {
+                    "base_url": "https://km.seres.cn",
+                    "community_id": "community",
+                    "username": "user",
+                    "password": "pass",
+                    "dataset_id": "kb_123",
+                    "page_size": 2,
+                    "max_download_files": 1,
+                    "include_cover_image": False,
+                    "fallback_to_content_markdown": False,
+                }
+            )
+
+            self.assertEqual(fake_portal_client.list_calls, [1])
+            self.assertEqual(fake_portal_client.detail_calls, ["doc-1"])
+            self.assertEqual(fake_portal_client.download_calls, ["file-1"])
+            self.assertEqual(result["total_documents"], 3)
+            self.assertTrue(result["download_limit_reached"])
+            self.assertEqual(result["imported_document_count"], 1)
+            self.assertEqual(result["uploaded_file_count"], 1)
+            self.assertEqual(result["updated_document_count"], 1)
+            self.assertEqual(result["errors"], [])
+
     def test_import_knowledge_portal_documents_requires_at_least_one_upload_source(self):
         portal_service = FakeKnowledgePortalService({"documents": [], "errors": []})
         ragflow_client = FakeRagflowClient()
@@ -293,6 +388,30 @@ class RagflowDocumentServiceTests(unittest.TestCase):
                     "include_attachments": False,
                     "include_cover_image": False,
                     "fallback_to_content_markdown": False,
+                }
+            )
+
+    def test_import_knowledge_portal_documents_rejects_parser_confiog_typo(self):
+        portal_service = FakeKnowledgePortalService({"documents": [], "errors": []})
+        ragflow_client = FakeRagflowClient()
+        service = RagflowDocumentService(ragflow_client, portal_service)
+
+        with self.assertRaisesRegex(
+            ValidationError,
+            "document_update.parser_confiog is not supported; did you mean parser_config\\?",
+        ):
+            service.import_knowledge_portal_documents(
+                {
+                    "base_url": "https://km.seres.cn",
+                    "community_id": "community",
+                    "username": "user",
+                    "password": "pass",
+                    "dataset_id": "kb_123",
+                    "document_update": {
+                        "enabled": 1,
+                        "chunk_method": "naive",
+                        "parser_confiog": {"chunk_token_num": 512},
+                    },
                 }
             )
 

@@ -37,6 +37,7 @@ class KnowledgePortalSyncService:
         payload: dict[str, Any],
         *,
         collect_documents: bool = True,
+        should_stop: Callable[[dict[str, Any]], bool] | None = None,
     ) -> tuple[dict[str, Any], Iterator[dict[str, Any]]]:
         normalized = self._validate_payload(payload)
         client = self.client_factory(
@@ -47,21 +48,13 @@ class KnowledgePortalSyncService:
             timeout=normalized["timeout"],
         )
 
-        list_items = self._collect_all_documents(
-            client,
-            doc_type=normalized["type"],
-            page_size=normalized["page_size"],
-            fd_cate_id=normalized["fd_cate_id"],
-            begin_time=normalized["begin_time"],
-        )
-
         target_root = self.output_dir
         target_root.mkdir(parents=True, exist_ok=True)
 
         summary = {
             "base_url": normalized["base_url"],
             "output_dir": str(target_root),
-            "total_documents": len(list_items),
+            "total_documents": 0,
             "downloaded_document_count": 0,
             "downloaded_file_count": 0,
             "max_download_files": normalized["max_download_files"],
@@ -74,10 +67,25 @@ class KnowledgePortalSyncService:
 
         def iter_documents() -> Iterator[dict[str, Any]]:
             nonlocal remaining_download_files
+            discovered_document_count = 0
 
-            for item in list_items:
+            for item, total_rows in self._iter_document_items(
+                client,
+                doc_type=normalized["type"],
+                page_size=normalized["page_size"],
+                fd_cate_id=normalized["fd_cate_id"],
+                begin_time=normalized["begin_time"],
+            ):
+                discovered_document_count += 1
+                if total_rows is not None:
+                    summary["total_documents"] = total_rows
+                else:
+                    summary["total_documents"] = discovered_document_count
+
                 if remaining_download_files == 0:
                     summary["download_limit_reached"] = True
+                if should_stop is not None and should_stop(summary):
+                    break
 
                 fd_id = str(item.get("fdId") or "").strip()
                 if not fd_id:
@@ -144,10 +152,29 @@ class KnowledgePortalSyncService:
         fd_cate_id: str | None,
         begin_time: str | None,
     ) -> list[dict[str, Any]]:
+        return [
+            item
+            for item, _ in self._iter_document_items(
+                client,
+                doc_type=doc_type,
+                page_size=page_size,
+                fd_cate_id=fd_cate_id,
+                begin_time=begin_time,
+            )
+        ]
+
+    def _iter_document_items(
+        self,
+        client: KnowledgePortalClient,
+        *,
+        doc_type: str,
+        page_size: int,
+        fd_cate_id: str | None,
+        begin_time: str | None,
+    ) -> Iterator[tuple[dict[str, Any], int | None]]:
         page_no = 1
         seen_ids: set[str] = set()
-        documents: list[dict[str, Any]] = []
-        total_rows: int | None = None
+        yielded_count = 0
 
         while True:
             response = client.list_documents(
@@ -174,8 +201,7 @@ class KnowledgePortalSyncService:
                 )
 
             total_rows_value = data.get("totalRows")
-            if isinstance(total_rows_value, int):
-                total_rows = total_rows_value
+            total_rows = total_rows_value if isinstance(total_rows_value, int) else None
 
             for item in items:
                 if not isinstance(item, dict):
@@ -185,17 +211,16 @@ class KnowledgePortalSyncService:
                     continue
                 if key:
                     seen_ids.add(key)
-                documents.append(item)
+                yielded_count += 1
+                yield item, total_rows
 
             if not items:
                 break
-            if total_rows is not None and len(documents) >= total_rows:
+            if total_rows is not None and yielded_count >= total_rows:
                 break
             if len(items) < page_size:
                 break
             page_no += 1
-
-        return documents
 
     def _download_document_files(
         self,

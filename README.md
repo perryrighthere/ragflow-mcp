@@ -310,6 +310,7 @@ curl --request POST \
 - 先复用知识门户同步流程，拉取文档详情、生成 `content.md`，并按需下载附件
 - 导入按文档流式执行：单个文档准备完成后会立即上传到 RAGFlow，而不是等待全部文档下载完再统一上传
 - 默认上传 `fdFile` 中的原始附件，不上传封面图；若当前文档没有可上传的二进制文件，则回退上传 `content.md`
+- 当 `fallback_to_content_markdown=false` 且 `max_download_files` 已耗尽时，导入流程会停止继续请求后续门户文档，因为剩余文档已不可能再生成可上传文件
 - 每个上传到 RAGFlow 的文件都会再调用一次文档更新接口，批量写入 `document_update`
 - `document_update.meta_fields` 会自动合并一组知识门户来源标签，例如 `knowledge_portal_fd_id`、`knowledge_portal_fd_name`、`knowledge_portal_fd_no`、`knowledge_portal_file_kind`、`knowledge_portal_file_id`、`knowledge_portal_file_name`
 - 当 `parse_after_upload=true` 时，所有更新成功的 RAGFlow 文档会在最后统一触发一次批量解析
