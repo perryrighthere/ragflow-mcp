@@ -312,6 +312,7 @@ curl --request POST \
 - 默认上传 `fdFile` 中的原始附件，不上传封面图；若当前文档没有可上传的二进制文件，则回退上传 `content.md`
 - 当 `fallback_to_content_markdown=false` 且 `max_download_files` 已耗尽时，导入流程会停止继续请求后续门户文档，因为剩余文档已不可能再生成可上传文件
 - 每个上传到 RAGFlow 的文件都会再调用一次文档更新接口，批量写入 `document_update`
+- 上传文件扩展名为 `.pptx` 时，文档更新接口会自动将 `chunk_method` 设置为 `presentation`，以便后续解析使用演示文稿解析方式
 - `document_update.meta_fields` 会自动合并一组知识门户来源标签，例如 `knowledge_portal_fd_id`、`knowledge_portal_fd_name`、`knowledge_portal_fd_no`、`knowledge_portal_file_kind`、`knowledge_portal_file_id`、`knowledge_portal_file_name`
 - 当 `parse_after_upload=true` 时，所有更新成功的 RAGFlow 文档会在最后统一触发一次批量解析
 - 单个文档处理完成后，会删除该文档在本地的暂存目录和附件缓存

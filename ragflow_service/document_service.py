@@ -10,6 +10,9 @@ from .knowledge_portal_service import KnowledgePortalSyncService
 from .ragflow_client import FileUpload, RagflowClient, UpstreamResponse
 
 
+PRESENTATION_FILE_EXTENSIONS = {".pptx"}
+
+
 class RagflowDocumentService:
     def __init__(self, client: RagflowClient, knowledge_portal_service: KnowledgePortalSyncService):
         self.client = client
@@ -369,7 +372,19 @@ class RagflowDocumentService:
             ),
             **user_meta_fields,
         }
+        if self._is_presentation_upload(upload_source):
+            payload["chunk_method"] = "presentation"
         return payload
+
+    def _is_presentation_upload(self, upload_source: dict[str, Any]) -> bool:
+        names = [
+            str(upload_source.get("portal_file_name") or ""),
+            str(upload_source.get("path") or ""),
+        ]
+        upload = upload_source.get("upload")
+        if isinstance(upload, FileUpload):
+            names.append(upload.filename)
+        return any(Path(name).suffix.lower() in PRESENTATION_FILE_EXTENSIONS for name in names if name)
 
     def _build_knowledge_portal_meta_fields(
         self,

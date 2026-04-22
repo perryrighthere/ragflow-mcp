@@ -277,6 +277,81 @@ class RagflowDocumentServiceTests(unittest.TestCase):
             self.assertEqual(result["parsed_document_count"], 2)
             self.assertEqual(result["errors"], [])
 
+    def test_import_sets_presentation_chunk_method_for_pptx_uploads(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            doc_dir = root / "doc-1"
+            doc_dir.mkdir()
+
+            detail_path = doc_dir / "detail.json"
+            detail_path.write_text(
+                json.dumps(
+                    {
+                        "code": 200,
+                        "data": {
+                            "fdId": "doc-1",
+                            "fdName": "季度汇报",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            presentation_path = doc_dir / "quarterly.PPTX"
+            presentation_path.write_bytes(b"pptx")
+
+            portal_service = FakeKnowledgePortalService(
+                {
+                    "base_url": "https://km.seres.cn",
+                    "output_dir": str(root),
+                    "total_documents": 1,
+                    "documents": [
+                        {
+                            "fdId": "doc-1",
+                            "fdName": "季度汇报",
+                            "saved_dir": str(doc_dir),
+                            "detail_json_path": str(detail_path),
+                            "content_path": None,
+                            "downloaded_files": [
+                                {
+                                    "kind": "attachment",
+                                    "file_id": "file-1",
+                                    "file_name": "quarterly.PPTX",
+                                    "path": str(presentation_path),
+                                }
+                            ],
+                        },
+                    ],
+                    "errors": [],
+                },
+            )
+            ragflow_client = FakeRagflowClient()
+            service = RagflowDocumentService(ragflow_client, portal_service)
+
+            service.import_knowledge_portal_documents(
+                {
+                    "base_url": "https://km.seres.cn",
+                    "community_id": "community",
+                    "username": "user",
+                    "password": "pass",
+                    "dataset_id": "kb_123",
+                    "parse_after_upload": True,
+                    "include_cover_image": False,
+                    "document_update": {
+                        "enabled": 1,
+                        "chunk_method": "naive",
+                        "parser_config": {"chunk_token_num": 256},
+                    },
+                }
+            )
+
+            update_payload = ragflow_client.update_calls[0][2]
+            self.assertEqual(update_payload["chunk_method"], "presentation")
+            self.assertEqual(
+                ragflow_client.parse_calls[0],
+                ("kb_123", {"document_ids": ["rf-doc-1"]}),
+            )
+
     def test_import_stops_querying_portal_after_download_limit_when_markdown_fallback_disabled(self):
         class StreamingPortalClient:
             def __init__(self):
