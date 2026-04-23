@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .conversation_store import ConversationStore
+from .conversation_store import ConversationHistoryPage, ConversationStore
 from .document_service import RagflowDocumentService
 from .exceptions import ConfigError, KnowledgePortalAPIError, LLMAPIError, RagflowAPIError, ValidationError
 from .knowledge_portal_service import KnowledgePortalSyncService
@@ -302,6 +302,20 @@ def create_application(settings: Settings | None = None):
         request_payload = payload.model_dump(exclude_none=True)
         request_payload.pop("stream", None)
         return await run_in_threadpool(_build_conversation_qa_streaming_response, runtime, request_payload)
+
+    @app.get("/api/v1/qa/conversations", tags=["Knowledge Base QA"])
+    async def list_user_conversations(
+        user_id: str = Query(..., description="Logical user ID used to isolate conversation history."),
+        page: int = Query(default=1, ge=1, description="One-based page number."),
+        page_size: int = Query(default=20, ge=1, le=100, description="Number of conversations per page."),
+    ) -> JSONResponse:
+        history_page = await run_in_threadpool(
+            runtime.get_conversation_store().list_conversations_by_user,
+            user_id=user_id,
+            page=page,
+            page_size=page_size,
+        )
+        return JSONResponse(status_code=200, content={"code": 0, "data": _conversation_history_page_payload(history_page)})
 
     @app.get("/api/v1/qa/prompt-templates", tags=["Knowledge Base QA"])
     async def get_prompt_templates() -> JSONResponse:
@@ -627,6 +641,29 @@ def _drop_none_values(values: dict[str, Any]) -> dict[str, Any]:
 
 def _json_line(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False) + "\n"
+
+
+def _conversation_history_page_payload(history_page: ConversationHistoryPage) -> dict[str, Any]:
+    return {
+        "user_id": history_page.user_id,
+        "total": history_page.total,
+        "page": history_page.page,
+        "page_size": history_page.page_size,
+        "conversations": [
+            {
+                "conversation_id": conversation.conversation_id,
+                "conversation_title": conversation.title,
+                "history_summary": conversation.summary,
+                "history_messages": [
+                    {"role": message.role, "content": message.content}
+                    for message in conversation.recent_messages
+                ],
+                "created_at": conversation.created_at,
+                "updated_at": conversation.updated_at,
+            }
+            for conversation in history_page.conversations
+        ],
+    }
 
 
 def _generate_conversation_title(

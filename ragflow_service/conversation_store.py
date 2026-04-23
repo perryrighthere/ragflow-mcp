@@ -25,6 +25,25 @@ class ConversationState:
     created: bool = False
 
 
+@dataclass(frozen=True)
+class ConversationHistoryItem:
+    conversation_id: str
+    title: str
+    summary: str
+    recent_messages: list[ConversationMessage]
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class ConversationHistoryPage:
+    user_id: str
+    total: int
+    page: int
+    page_size: int
+    conversations: list[ConversationHistoryItem]
+
+
 class ConversationStore:
     def __init__(self, db_path: str | Path, *, recent_turn_window: int = 6, summary_max_chars: int = 4000):
         self._db_path = Path(db_path).expanduser().resolve()
@@ -32,6 +51,54 @@ class ConversationStore:
         self._summary_max_chars = max(200, int(summary_max_chars))
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+
+    def list_conversations_by_user(
+        self,
+        *,
+        user_id: str,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> ConversationHistoryPage:
+        normalized_user_id = self._normalize_identifier(user_id, field_name="user_id")
+        normalized_page = self._normalize_positive_integer(page, field_name="page")
+        normalized_page_size = self._normalize_positive_integer(page_size, field_name="page_size", max_value=100)
+        offset = (normalized_page - 1) * normalized_page_size
+
+        with self._connect() as conn:
+            total_row = conn.execute(
+                "SELECT COUNT(*) AS total FROM conversations WHERE user_id = ?",
+                (normalized_user_id,),
+            ).fetchone()
+            total = int(total_row["total"] or 0) if total_row else 0
+            rows = conn.execute(
+                """
+                SELECT conversation_id, title, summary, created_at, updated_at
+                FROM conversations
+                WHERE user_id = ?
+                ORDER BY updated_at DESC, conversation_id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (normalized_user_id, normalized_page_size, offset),
+            ).fetchall()
+            conversations = [
+                ConversationHistoryItem(
+                    conversation_id=str(row["conversation_id"]),
+                    title=str(row["title"] or ""),
+                    summary=str(row["summary"] or ""),
+                    recent_messages=self._fetch_messages(conn, str(row["conversation_id"])),
+                    created_at=str(row["created_at"]),
+                    updated_at=str(row["updated_at"]),
+                )
+                for row in rows
+            ]
+
+        return ConversationHistoryPage(
+            user_id=normalized_user_id,
+            total=total,
+            page=normalized_page,
+            page_size=normalized_page_size,
+            conversations=conversations,
+        )
 
     def get_or_create_conversation(self, *, user_id: str, conversation_id: str | None = None) -> ConversationState:
         normalized_user_id = self._normalize_identifier(user_id, field_name="user_id")
@@ -273,6 +340,17 @@ class ConversationStore:
         if not normalized:
             raise ValidationError("title is required")
         return normalized[:120]
+
+    def _normalize_positive_integer(self, value: int, *, field_name: str, max_value: int | None = None) -> int:
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            raise ValidationError(f"{field_name} must be a positive integer")
+        if normalized < 1:
+            raise ValidationError(f"{field_name} must be a positive integer")
+        if max_value is not None and normalized > max_value:
+            raise ValidationError(f"{field_name} must be less than or equal to {max_value}")
+        return normalized
 
 
 def _build_summary_block(rows: list[sqlite3.Row]) -> str:

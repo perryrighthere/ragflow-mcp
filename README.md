@@ -139,6 +139,7 @@ docker run --rm \
 - `POST /api/v1/retrieval`
 - `POST /api/v1/qa/answer/stream`
 - `POST /api/v1/qa/conversations/answer/stream`
+- `GET /api/v1/qa/conversations`
 - `POST /api/v1/knowledge-portal/documents/sync`
 - `POST /api/v1/knowledge-portal/documents/import`
 - `GET /api/v1/datasets/{dataset_id}/documents`
@@ -243,6 +244,51 @@ curl -N --request POST \
 - `CONVERSATION_DB_PATH`：SQLite 文件路径，默认 `output/conversations.sqlite3`
 - `CONVERSATION_RECENT_TURNS`：保留的最近原始轮数，默认 `6`
 - `CONVERSATION_SUMMARY_MAX_CHARS`：历史摘要最大字符数，默认 `4000`
+
+## 历史会话查询接口
+
+接口：`GET /api/v1/qa/conversations`
+
+行为：
+
+- 按 `user_id` 查询该用户的历史会话列表
+- 返回会话标题、压缩后的较早历史摘要、当前保留窗口内的原始消息
+- 默认按 `updated_at` 倒序返回，支持分页
+- 该接口只读取本地 SQLite 会话库，不会调用 RAGFlow 或 LLM
+
+请求示例：
+
+```bash
+curl --request GET \
+  --url 'http://127.0.0.1:8080/api/v1/qa/conversations?user_id=user_001&page=1&page_size=20'
+```
+
+响应示例：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "user_id": "user_001",
+    "total": 1,
+    "page": 1,
+    "page_size": 20,
+    "conversations": [
+      {
+        "conversation_id": "b01eed84b85611efa0e90242ac120005",
+        "conversation_title": "五看首轮问答",
+        "history_summary": "",
+        "history_messages": [
+          {"role": "user", "content": "五看是什么？"},
+          {"role": "assistant", "content": "五看包括看行业、看市场、看用户、看竞争、看自己。"}
+        ],
+        "created_at": "2026-04-23T08:00:00+00:00",
+        "updated_at": "2026-04-23T08:00:10+00:00"
+      }
+    ]
+  }
+}
+```
 
 ## 知识门户文档同步
 

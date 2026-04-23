@@ -602,6 +602,120 @@ class HttpServerApiTests(unittest.TestCase):
             {"detail": "conversation_id does not belong to the provided user_id"},
         )
 
+    def test_list_conversations_route_returns_user_scoped_history(self):
+        self.fake_client.qa_mode = True
+
+        for user_id, conversation_id, question in [
+            ("user-1", "conv-a", "用户一的第一个问题？"),
+            ("user-1", "conv-b", "用户一的第二个问题？"),
+            ("user-2", "conv-other", "用户二的问题？"),
+        ]:
+            with self.client.stream(
+                "POST",
+                "/api/v1/qa/conversations/answer/stream",
+                json={
+                    "user_id": user_id,
+                    "conversation_id": conversation_id,
+                    "question": question,
+                    "dataset_ids": ["kb_123"],
+                },
+            ) as response:
+                self.assertEqual(response.status_code, 200)
+                _ = [json.loads(line) for line in response.iter_lines() if line]
+
+        response = self.client.get(
+            "/api/v1/qa/conversations",
+            params={"user_id": "user-1", "page": 1, "page_size": 10},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["user_id"], "user-1")
+        self.assertEqual(payload["data"]["total"], 2)
+        self.assertEqual(payload["data"]["page"], 1)
+        self.assertEqual(payload["data"]["page_size"], 10)
+        conversation_ids = {conversation["conversation_id"] for conversation in payload["data"]["conversations"]}
+        self.assertEqual(conversation_ids, {"conv-a", "conv-b"})
+        self.assertNotIn("conv-other", conversation_ids)
+        first = next(
+            conversation for conversation in payload["data"]["conversations"] if conversation["conversation_id"] == "conv-a"
+        )
+        self.assertEqual(first["conversation_title"], "五看首轮问答")
+        self.assertEqual(first["history_summary"], "")
+        self.assertEqual(
+            first["history_messages"],
+            [
+                {"role": "user", "content": "用户一的第一个问题？"},
+                {"role": "assistant", "content": "五看包括看行业、看市场、看用户、看竞争、看自己。"},
+            ],
+        )
+        self.assertTrue(first["created_at"])
+        self.assertTrue(first["updated_at"])
+
+    def test_list_conversations_route_paginates_results(self):
+        self.fake_client.qa_mode = True
+
+        for index in range(3):
+            with self.client.stream(
+                "POST",
+                "/api/v1/qa/conversations/answer/stream",
+                json={
+                    "user_id": "user-1",
+                    "conversation_id": f"conv-{index}",
+                    "question": f"第 {index} 个问题？",
+                    "dataset_ids": ["kb_123"],
+                },
+            ) as response:
+                self.assertEqual(response.status_code, 200)
+                _ = [json.loads(line) for line in response.iter_lines() if line]
+
+        response = self.client.get(
+            "/api/v1/qa/conversations",
+            params={"user_id": "user-1", "page": 2, "page_size": 2},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["data"]
+        self.assertEqual(payload["total"], 3)
+        self.assertEqual(payload["page"], 2)
+        self.assertEqual(payload["page_size"], 2)
+        self.assertEqual(len(payload["conversations"]), 1)
+
+    def test_list_conversations_route_rejects_blank_user_id(self):
+        response = self.client.get("/api/v1/qa/conversations", params={"user_id": " "})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"detail": "user_id is required"})
+
+    def test_list_conversations_route_does_not_require_ragflow_or_llm_config(self):
+        app = create_application(
+            Settings(
+                ragflow_base_url="",
+                ragflow_api_key="",
+                llm_base_url="",
+                llm_api_key="",
+                llm_model="",
+                conversation_db_path=f"{self.tempdir.name}/conversation-history-only.sqlite3",
+            )
+        )
+        store = app.state.runtime.get_conversation_store()
+        state = store.get_or_create_conversation(user_id="user-1", conversation_id="history-only")
+        store.append_turn(
+            user_id="user-1",
+            conversation_id=state.conversation_id,
+            user_message="只查历史？",
+            assistant_message="可以。",
+        )
+        client = TestClient(app)
+
+        response = client.get("/api/v1/qa/conversations", params={"user_id": "user-1"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["data"]
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["conversations"][0]["conversation_id"], "history-only")
+
 
 if __name__ == "__main__":
     unittest.main()

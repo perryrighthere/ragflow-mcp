@@ -105,6 +105,7 @@ Cache-Control: no-cache
 | `GET` | `/api/v1/qa/prompt-templates` | Knowledge Base QA | 获取默认提示词模板 |
 | `POST` | `/api/v1/qa/answer/stream` | Knowledge Base QA | 单轮问答流式接口 |
 | `POST` | `/api/v1/qa/conversations/answer/stream` | Knowledge Base QA | 带会话历史的流式问答接口 |
+| `GET` | `/api/v1/qa/conversations` | Knowledge Base QA | 按用户查询历史会话列表 |
 | `POST` | `/api/v1/knowledge-portal/documents/sync` | Knowledge Portal | 同步并下载知识门户文档 |
 | `POST` | `/api/v1/knowledge-portal/documents/import` | Knowledge Portal | 同步知识门户文档并导入 RAGFlow |
 
@@ -637,6 +638,89 @@ curl -N --request POST \
 ```json
 {
   "detail": "conversation_id does not belong to the provided user_id"
+}
+```
+
+### 4.4 `GET /api/v1/qa/conversations`
+
+按用户查询本地 SQLite 中保存的历史会话列表。
+
+#### 行为说明
+
+- `user_id` 必填，用于查询该用户自己的会话。
+- 返回结果按 `updated_at` 倒序排列。
+- `page` 和 `page_size` 支持分页；`page_size` 最大为 `100`。
+- 每条会话包含标题、压缩后的较早历史摘要、当前保留窗口内的原始消息。
+- 该接口只读取本地会话库，不会调用 RAGFlow 或 LLM。
+
+#### 查询参数
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `user_id` | `string` | 是 | 无 | 逻辑用户 ID |
+| `page` | `integer` | 否 | `1` | 页码，从 1 开始 |
+| `page_size` | `integer` | 否 | `20` | 每页数量，范围 `1` 到 `100` |
+
+请求示例：
+
+```bash
+curl --request GET \
+  --url 'http://127.0.0.1:8080/api/v1/qa/conversations?user_id=user_001&page=1&page_size=20'
+```
+
+响应结构：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `code` | `integer` | 固定为 `0` |
+| `data.user_id` | `string` | 当前用户 ID |
+| `data.total` | `integer` | 当前用户的会话总数 |
+| `data.page` | `integer` | 当前页码 |
+| `data.page_size` | `integer` | 每页数量 |
+| `data.conversations` | `object[]` | 会话列表 |
+
+`data.conversations[]` 结构：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `conversation_id` | `string` | 会话 ID |
+| `conversation_title` | `string` | 会话标题 |
+| `history_summary` | `string` | 被压缩的较早历史摘要 |
+| `history_messages` | `object[]` | 当前窗口内保留的最近原始消息 |
+| `created_at` | `string` | 会话创建时间，UTC ISO 8601 |
+| `updated_at` | `string` | 会话最近更新时间，UTC ISO 8601 |
+
+`history_messages[]` 结构：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `role` | `string` | `user` 或 `assistant` |
+| `content` | `string` | 消息内容 |
+
+响应示例：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "user_id": "user_001",
+    "total": 1,
+    "page": 1,
+    "page_size": 20,
+    "conversations": [
+      {
+        "conversation_id": "b01eed84b85611efa0e90242ac120005",
+        "conversation_title": "五看首轮问答",
+        "history_summary": "",
+        "history_messages": [
+          {"role": "user", "content": "五看是什么？"},
+          {"role": "assistant", "content": "五看包括看行业、看市场、看用户、看竞争、看自己。"}
+        ],
+        "created_at": "2026-04-23T08:00:00+00:00",
+        "updated_at": "2026-04-23T08:00:10+00:00"
+      }
+    ]
+  }
 }
 ```
 
