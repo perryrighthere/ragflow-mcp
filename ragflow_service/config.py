@@ -8,6 +8,7 @@ from .exceptions import ConfigError
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 DEFAULT_CONVERSATION_DB_PATH = str((Path(__file__).resolve().parent.parent / "output" / "conversations.sqlite3").resolve())
+DEFAULT_RAG_INFO_SYNC_URL = "http://paas.dev.seres.cn/kwb-oa/v1/kwRagFileInfo/syncRagInfo"
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class Settings:
     conversation_db_path: str = DEFAULT_CONVERSATION_DB_PATH
     conversation_recent_turns: int = 6
     conversation_summary_max_chars: int = 4000
+    rag_info_sync_url: str = DEFAULT_RAG_INFO_SYNC_URL
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -57,6 +59,12 @@ class Settings:
             "CONVERSATION_SUMMARY_MAX_CHARS",
             file_values,
             default="4000",
+            prefer_os_env=prefer_os_env,
+        )
+        rag_info_sync_url = _get_config_value(
+            "RAG_INFO_SYNC_URL",
+            file_values,
+            default=DEFAULT_RAG_INFO_SYNC_URL,
             prefer_os_env=prefer_os_env,
         )
 
@@ -98,6 +106,7 @@ class Settings:
             conversation_db_path=conversation_db_path,
             conversation_recent_turns=conversation_recent_turns,
             conversation_summary_max_chars=conversation_summary_max_chars,
+            rag_info_sync_url=rag_info_sync_url,
         )
 
     def with_overrides(
@@ -115,6 +124,7 @@ class Settings:
         conversation_db_path: str | None = None,
         conversation_recent_turns: int | None = None,
         conversation_summary_max_chars: int | None = None,
+        rag_info_sync_url: str | None = None,
     ) -> "Settings":
         return replace(
             self,
@@ -136,6 +146,7 @@ class Settings:
                 if conversation_summary_max_chars is not None
                 else self.conversation_summary_max_chars
             ),
+            rag_info_sync_url=rag_info_sync_url if rag_info_sync_url is not None else self.rag_info_sync_url,
         )
 
     def require_ragflow(self) -> "Settings":

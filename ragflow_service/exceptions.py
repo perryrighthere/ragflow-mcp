@@ -38,3 +38,13 @@ class KnowledgePortalAPIError(ServiceError):
         self.status_code = status_code
         self.code = code
         self.payload = payload or {}
+
+
+class RagInfoSyncError(ServiceError):
+    """Raised when syncing RAG document identity metadata fails."""
+
+    def __init__(self, message, status_code=502, code=None, payload=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.code = code
+        self.payload = payload or {}

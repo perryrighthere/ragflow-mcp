@@ -5,8 +5,9 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from .exceptions import RagflowAPIError, ValidationError
+from .exceptions import RagInfoSyncError, RagflowAPIError, ValidationError
 from .knowledge_portal_service import KnowledgePortalSyncService
+from .rag_info_sync_client import RagInfoSyncClient
 from .ragflow_client import FileUpload, RagflowClient, UpstreamResponse
 
 
@@ -14,9 +15,18 @@ PRESENTATION_FILE_EXTENSIONS = {".pptx"}
 
 
 class RagflowDocumentService:
-    def __init__(self, client: RagflowClient, knowledge_portal_service: KnowledgePortalSyncService):
+    def __init__(
+        self,
+        client: RagflowClient,
+        knowledge_portal_service: KnowledgePortalSyncService,
+        *,
+        rag_info_sync_client: RagInfoSyncClient | None = None,
+        tenant_id: str | None = None,
+    ):
         self.client = client
         self.knowledge_portal_service = knowledge_portal_service
+        self.rag_info_sync_client = rag_info_sync_client
+        self.tenant_id = tenant_id if tenant_id is not None else str(getattr(client, "api_key", "") or "")
 
     def import_knowledge_portal_documents(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = self._validate_import_payload(payload)
@@ -107,9 +117,16 @@ class RagflowDocumentService:
                     upload_source = upload_sources[index]
                     update_payload = self._build_document_update_payload(
                         base_update=normalized["document_update"],
+                        dataset_id=normalized["dataset_id"],
+                        document_id=uploaded_document["id"],
                         detail_data=detail_data,
                         portal_document=portal_document,
                         upload_source=upload_source,
+                    )
+                    rag_info_payload = self._build_rag_info_payload(
+                        dataset_id=normalized["dataset_id"],
+                        document_id=uploaded_document["id"],
+                        fd_id=fd_id,
                     )
                     ragflow_entry = {
                         "document_id": uploaded_document["id"],
@@ -140,6 +157,16 @@ class RagflowDocumentService:
                         continue
 
                     updated_document_count += 1
+                    try:
+                        self._sync_rag_info(rag_info_payload)
+                    except RagInfoSyncError as exc:
+                        errors.append(
+                            self._build_rag_info_sync_error(
+                                fd_id=fd_id,
+                                document_id=uploaded_document["id"],
+                                exc=exc,
+                            )
+                        )
                     parse_document_ids.append(uploaded_document["id"])
                     ragflow_entry["status"] = "updated"
                     ragflow_entry["meta_fields"] = update_payload.get("meta_fields", {})
@@ -358,12 +385,15 @@ class RagflowDocumentService:
         self,
         *,
         base_update: dict[str, Any],
+        dataset_id: str,
+        document_id: str,
         detail_data: dict[str, Any],
         portal_document: dict[str, Any],
         upload_source: dict[str, Any],
     ) -> dict[str, Any]:
         payload = deepcopy(base_update)
         user_meta_fields = payload.get("meta_fields") or {}
+        fd_id = str(detail_data.get("fdId") or portal_document.get("fdId") or "").strip()
         payload["meta_fields"] = {
             **self._build_knowledge_portal_meta_fields(
                 detail_data=detail_data,
@@ -371,10 +401,35 @@ class RagflowDocumentService:
                 upload_source=upload_source,
             ),
             **user_meta_fields,
+            **self._build_rag_info_payload(
+                dataset_id=dataset_id,
+                document_id=document_id,
+                fd_id=fd_id,
+            ),
         }
         if self._is_presentation_upload(upload_source):
             payload["chunk_method"] = "presentation"
         return payload
+
+    def _build_rag_info_payload(self, *, dataset_id: str, document_id: str, fd_id: str) -> dict[str, str]:
+        return {
+            "knowledgeDatabaseId": dataset_id,
+            "ragFileId": document_id,
+            "originFileId": fd_id,
+            "tenantId": self.tenant_id,
+        }
+
+    def _sync_rag_info(self, payload: dict[str, str]) -> UpstreamResponse | None:
+        if self.rag_info_sync_client is None:
+            return None
+        response = self.rag_info_sync_client.sync_rag_info(payload)
+        if response.status_code >= 400:
+            raise RagInfoSyncError(
+                f"RAG info sync failed with HTTP {response.status_code}",
+                status_code=response.status_code,
+                payload=response.payload if isinstance(response.payload, dict) else {"raw": response.raw_text or ""},
+            )
+        return response
 
     def _is_presentation_upload(self, upload_source: dict[str, Any]) -> bool:
         names = [
@@ -451,6 +506,23 @@ class RagflowDocumentService:
         }
         if document_id:
             error["document_id"] = document_id
+        if exc.payload:
+            error["payload"] = exc.payload
+        return error
+
+    def _build_rag_info_sync_error(
+        self,
+        *,
+        fd_id: str,
+        document_id: str,
+        exc: RagInfoSyncError,
+    ) -> dict[str, Any]:
+        error = {
+            "stage": "rag_info_sync",
+            "fdId": fd_id,
+            "document_id": document_id,
+            "detail": str(exc),
+        }
         if exc.payload:
             error["payload"] = exc.payload
         return error

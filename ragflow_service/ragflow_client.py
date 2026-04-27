@@ -242,12 +242,14 @@ class RagflowClient:
         raw_body_text: str | None = None,
         files: list[FileUpload] | None = None,
     ) -> None:
+        log_payload = self._redact_sensitive_payload(payload)
+        log_raw_body_text = self._redact_raw_body_text(raw_body_text)
         LOGGER.info("RAGFlow request -> %s %s auth=%s", method.upper(), url, "on" if use_auth else "off")
         LOGGER.info("RAGFlow request headers -> %s", self._render_log_payload(headers))
-        if payload is not None:
-            LOGGER.info("RAGFlow request payload -> %s", self._render_log_payload(payload))
-        if raw_body_text is not None:
-            LOGGER.info("RAGFlow request raw body -> %s", raw_body_text)
+        if log_payload is not None:
+            LOGGER.info("RAGFlow request payload -> %s", self._render_log_payload(log_payload))
+        if log_raw_body_text is not None:
+            LOGGER.info("RAGFlow request raw body -> %s", log_raw_body_text)
         elif files:
             file_payload = [
                 {
@@ -260,7 +262,7 @@ class RagflowClient:
             LOGGER.info("RAGFlow request files -> %s", self._render_log_payload(file_payload))
         LOGGER.info(
             "RAGFlow request curl -> %s",
-            self._build_curl_command(method, url, headers, raw_body_text=raw_body_text, files=files),
+            self._build_curl_command(method, url, headers, raw_body_text=log_raw_body_text, files=files),
         )
 
     def _log_response(self, response: UpstreamResponse) -> None:
@@ -283,6 +285,25 @@ class RagflowClient:
         if isinstance(payload, (dict, list)):
             return json.dumps(payload, ensure_ascii=False)
         return str(payload)
+
+    def _redact_sensitive_payload(self, payload: Any) -> Any:
+        if isinstance(payload, dict):
+            return {
+                key: "<redacted>" if key == "tenantId" and value else self._redact_sensitive_payload(value)
+                for key, value in payload.items()
+            }
+        if isinstance(payload, list):
+            return [self._redact_sensitive_payload(item) for item in payload]
+        return payload
+
+    def _redact_raw_body_text(self, raw_body_text: str | None) -> str | None:
+        if raw_body_text is None:
+            return None
+        try:
+            payload = json.loads(raw_body_text)
+        except json.JSONDecodeError:
+            return raw_body_text
+        return json.dumps(self._redact_sensitive_payload(payload), ensure_ascii=False)
 
     def _build_curl_command(
         self,

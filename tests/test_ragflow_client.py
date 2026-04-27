@@ -43,6 +43,31 @@ class RagflowClientTests(unittest.TestCase):
         self.assertIn("--header 'Authorization: Bearer secret-key'", output)
         self.assertIn("--data-raw '{\"question\": \"五看六定\"}'", output)
 
+    def test_request_json_redacts_tenant_id_from_logs_only(self):
+        client = RagflowClient("http://ragflow.local:9380", "secret-key")
+        payload = {
+            "meta_fields": {
+                "knowledgeDatabaseId": "kb_123",
+                "ragFileId": "rf-doc-1",
+                "originFileId": "doc-1",
+                "tenantId": "tenant-key",
+            }
+        }
+
+        with patch(
+            "ragflow_service.ragflow_client.request.urlopen",
+            return_value=FakeHTTPResponse(200, b'{"code":0}'),
+        ) as mocked:
+            with self.assertLogs("ragflow_service", level="INFO") as captured:
+                client.request_json("PUT", "/api/v1/datasets/kb_123/documents/rf-doc-1", json_body=payload)
+
+        sent_request = mocked.call_args.args[0]
+        self.assertEqual(json.loads(sent_request.data.decode("utf-8")), payload)
+
+        output = "\n".join(captured.output)
+        self.assertIn('"tenantId": "<redacted>"', output)
+        self.assertNotIn("tenant-key", output)
+
     def test_request_json_returns_raw_success_payload(self):
         client = RagflowClient("http://ragflow.local:9380", "secret-key", timeout=30.0)
 

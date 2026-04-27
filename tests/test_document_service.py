@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from ragflow_service.document_service import RagflowDocumentService
-from ragflow_service.exceptions import ValidationError
+from ragflow_service.exceptions import RagInfoSyncError, ValidationError
 from ragflow_service.knowledge_portal_service import KnowledgePortalSyncService
 from ragflow_service.ragflow_client import UpstreamResponse
 
@@ -61,6 +61,7 @@ class FakeKnowledgePortalService:
 
 class FakeRagflowClient:
     def __init__(self, *, events=None):
+        self.api_key = "tenant-key"
         self.upload_calls = []
         self.update_calls = []
         self.parse_calls = []
@@ -95,6 +96,20 @@ class FakeRagflowClient:
     def parse_documents(self, dataset_id, payload):
         self.parse_calls.append((dataset_id, payload))
         self.events.append("parse:" + ",".join(payload.get("document_ids") or []))
+        return UpstreamResponse(status_code=200, payload={"code": 0})
+
+
+class FakeRagInfoSyncClient:
+    def __init__(self, *, events=None, fail=False):
+        self.calls = []
+        self.events = events if events is not None else []
+        self.fail = fail
+
+    def sync_rag_info(self, payload):
+        self.calls.append(payload)
+        self.events.append(f"sync:{payload['ragFileId']}")
+        if self.fail:
+            raise RagInfoSyncError("sync failed", status_code=502, payload={"message": "bad gateway"})
         return UpstreamResponse(status_code=200, payload={"code": 0})
 
 
@@ -149,6 +164,7 @@ class RagflowDocumentServiceTests(unittest.TestCase):
             content_path.write_text("# 纯正文文档\n\n正文", encoding="utf-8")
 
             events = []
+            rag_info_sync_client = FakeRagInfoSyncClient(events=events)
             portal_service = FakeKnowledgePortalService(
                 {
                     "base_url": "https://km.seres.cn",
@@ -188,7 +204,12 @@ class RagflowDocumentServiceTests(unittest.TestCase):
                 events=events,
             )
             ragflow_client = FakeRagflowClient(events=events)
-            service = RagflowDocumentService(ragflow_client, portal_service)
+            service = RagflowDocumentService(
+                ragflow_client,
+                portal_service,
+                rag_info_sync_client=rag_info_sync_client,
+                tenant_id="tenant-key",
+            )
 
             result = service.import_knowledge_portal_documents(
                 {
@@ -233,11 +254,13 @@ class RagflowDocumentServiceTests(unittest.TestCase):
                     "yield:doc-1",
                     "upload:manual.pdf",
                     "update:rf-doc-1",
+                    "sync:rf-doc-1",
                     "cleanup:doc-1",
                     "resumed:doc-1",
                     "yield:doc-2",
                     "upload:content.md",
                     "update:rf-doc-2",
+                    "sync:rf-doc-2",
                     "cleanup:doc-2",
                     "resumed:doc-2",
                     "parse:rf-doc-1,rf-doc-2",
@@ -260,11 +283,37 @@ class RagflowDocumentServiceTests(unittest.TestCase):
             self.assertEqual(first_update[2]["meta_fields"]["knowledge_portal_fd_id"], "doc-1")
             self.assertEqual(first_update[2]["meta_fields"]["knowledge_portal_file_kind"], "attachment")
             self.assertEqual(first_update[2]["meta_fields"]["knowledge_portal_file_name"], "manual.pdf")
+            self.assertEqual(first_update[2]["meta_fields"]["knowledgeDatabaseId"], "kb_123")
+            self.assertEqual(first_update[2]["meta_fields"]["ragFileId"], "rf-doc-1")
+            self.assertEqual(first_update[2]["meta_fields"]["originFileId"], "doc-1")
+            self.assertEqual(first_update[2]["meta_fields"]["tenantId"], "tenant-key")
 
             second_update = ragflow_client.update_calls[1]
             self.assertEqual(second_update[2]["meta_fields"]["knowledge_portal_fd_id"], "doc-2")
             self.assertEqual(second_update[2]["meta_fields"]["knowledge_portal_file_kind"], "content_markdown")
             self.assertEqual(second_update[2]["meta_fields"]["knowledge_portal_file_name"], "content.md")
+            self.assertEqual(second_update[2]["meta_fields"]["knowledgeDatabaseId"], "kb_123")
+            self.assertEqual(second_update[2]["meta_fields"]["ragFileId"], "rf-doc-2")
+            self.assertEqual(second_update[2]["meta_fields"]["originFileId"], "doc-2")
+            self.assertEqual(second_update[2]["meta_fields"]["tenantId"], "tenant-key")
+
+            self.assertEqual(
+                rag_info_sync_client.calls,
+                [
+                    {
+                        "knowledgeDatabaseId": "kb_123",
+                        "ragFileId": "rf-doc-1",
+                        "originFileId": "doc-1",
+                        "tenantId": "tenant-key",
+                    },
+                    {
+                        "knowledgeDatabaseId": "kb_123",
+                        "ragFileId": "rf-doc-2",
+                        "originFileId": "doc-2",
+                        "tenantId": "tenant-key",
+                    },
+                ],
+            )
 
             self.assertEqual(
                 ragflow_client.parse_calls[0],
@@ -351,6 +400,81 @@ class RagflowDocumentServiceTests(unittest.TestCase):
                 ragflow_client.parse_calls[0],
                 ("kb_123", {"document_ids": ["rf-doc-1"]}),
             )
+
+    def test_import_records_rag_info_sync_errors_without_blocking_parse(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            doc_dir = root / "doc-1"
+            doc_dir.mkdir()
+
+            detail_path = doc_dir / "detail.json"
+            detail_path.write_text(
+                json.dumps(
+                    {
+                        "code": 200,
+                        "data": {
+                            "fdId": "doc-1",
+                            "fdName": "制度文档",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            attachment_path = doc_dir / "manual.pdf"
+            attachment_path.write_bytes(b"%PDF-1.4")
+
+            portal_service = FakeKnowledgePortalService(
+                {
+                    "base_url": "https://km.seres.cn",
+                    "output_dir": str(root),
+                    "total_documents": 1,
+                    "documents": [
+                        {
+                            "fdId": "doc-1",
+                            "fdName": "制度文档",
+                            "saved_dir": str(doc_dir),
+                            "detail_json_path": str(detail_path),
+                            "content_path": None,
+                            "downloaded_files": [
+                                {
+                                    "kind": "attachment",
+                                    "file_id": "file-1",
+                                    "file_name": "manual.pdf",
+                                    "path": str(attachment_path),
+                                }
+                            ],
+                        }
+                    ],
+                    "errors": [],
+                },
+            )
+            ragflow_client = FakeRagflowClient()
+            rag_info_sync_client = FakeRagInfoSyncClient(fail=True)
+            service = RagflowDocumentService(
+                ragflow_client,
+                portal_service,
+                rag_info_sync_client=rag_info_sync_client,
+                tenant_id="tenant-key",
+            )
+
+            result = service.import_knowledge_portal_documents(
+                {
+                    "base_url": "https://km.seres.cn",
+                    "community_id": "community",
+                    "username": "user",
+                    "password": "pass",
+                    "dataset_id": "kb_123",
+                    "parse_after_upload": True,
+                }
+            )
+
+            self.assertEqual(result["updated_document_count"], 1)
+            self.assertEqual(result["parsed_document_count"], 1)
+            self.assertEqual(ragflow_client.parse_calls, [("kb_123", {"document_ids": ["rf-doc-1"]})])
+            self.assertEqual(result["errors"][0]["stage"], "rag_info_sync")
+            self.assertEqual(result["errors"][0]["fdId"], "doc-1")
+            self.assertEqual(result["errors"][0]["document_id"], "rf-doc-1")
 
     def test_import_stops_querying_portal_after_download_limit_when_markdown_fallback_disabled(self):
         class StreamingPortalClient:

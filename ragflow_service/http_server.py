@@ -11,6 +11,7 @@ from .exceptions import ConfigError, KnowledgePortalAPIError, LLMAPIError, Ragfl
 from .knowledge_portal_service import KnowledgePortalSyncService
 from .llm_client import OpenAICompatibleClient
 from .qa_service import KnowledgeBaseQAService, NO_SOURCES_ANSWER, get_prompt_template_metadata
+from .rag_info_sync_client import RagInfoSyncClient
 from .ragflow_client import FileUpload, RagflowClient, UpstreamResponse
 
 try:
@@ -163,6 +164,7 @@ class ServiceRuntime:
         self._client = self._build_client(settings)
         self._llm_client = self._build_llm_client(settings)
         self._knowledge_portal_service = self._build_knowledge_portal_service(settings)
+        self._rag_info_sync_client = self._build_rag_info_sync_client(settings)
         self._conversation_store = self._build_conversation_store(settings)
 
     def get_client(self) -> RagflowClient:
@@ -187,7 +189,13 @@ class ServiceRuntime:
         return KnowledgeBaseQAService(ragflow_client, self.get_llm_client())
 
     def build_document_service(self) -> RagflowDocumentService:
-        return RagflowDocumentService(self.get_client(), self.get_knowledge_portal_service())
+        settings = self.get_settings()
+        return RagflowDocumentService(
+            self.get_client(),
+            self.get_knowledge_portal_service(),
+            rag_info_sync_client=self._rag_info_sync_client,
+            tenant_id=settings.ragflow_api_key,
+        )
 
     def get_knowledge_portal_service(self) -> KnowledgePortalSyncService:
         return self._knowledge_portal_service
@@ -216,6 +224,11 @@ class ServiceRuntime:
 
     def _build_knowledge_portal_service(self, settings: Settings) -> KnowledgePortalSyncService:
         return KnowledgePortalSyncService(default_timeout=settings.request_timeout)
+
+    def _build_rag_info_sync_client(self, settings: Settings) -> RagInfoSyncClient | None:
+        if not settings.rag_info_sync_url:
+            return None
+        return RagInfoSyncClient(settings.rag_info_sync_url, timeout=settings.request_timeout)
 
     def _build_conversation_store(self, settings: Settings) -> ConversationStore:
         return ConversationStore(

@@ -124,6 +124,7 @@ docker run --rm \
 可选：
 
 - `RAGFLOW_TIMEOUT`
+- `RAG_INFO_SYNC_URL`
 - `LLM_TIMEOUT`
 - `SERVICE_HOST`
 - `SERVICE_PORT`
@@ -358,6 +359,8 @@ curl --request POST \
 - 默认上传 `fdFile` 中的原始附件，不上传封面图；若当前文档没有可上传的二进制文件，则回退上传 `content.md`
 - 当 `fallback_to_content_markdown=false` 且 `max_download_files` 已耗尽时，导入流程会停止继续请求后续门户文档，因为剩余文档已不可能再生成可上传文件
 - 每个上传到 RAGFlow 的文件都会再调用一次文档更新接口，批量写入 `document_update`
+- 文档更新时会自动向 `document_update.meta_fields` 注入 `knowledgeDatabaseId`、`ragFileId`、`originFileId`、`tenantId`，分别对应 RAGFlow dataset id、RAGFlow document id、知识门户 `fdId`、当前 RAGFlow API key
+- 每个 RAGFlow 文档更新成功后，会调用 `RAG_INFO_SYNC_URL` 指向的接口同步上述四个字段到业务数据表；默认地址为 `http://paas.dev.seres.cn/kwb-oa/v1/kwRagFileInfo/syncRagInfo`
 - 上传文件扩展名为 `.pptx` 时，文档更新接口会自动将 `chunk_method` 设置为 `presentation`，以便后续解析使用演示文稿解析方式
 - `document_update.meta_fields` 会自动合并一组知识门户来源标签，例如 `knowledge_portal_fd_id`、`knowledge_portal_fd_name`、`knowledge_portal_fd_no`、`knowledge_portal_file_kind`、`knowledge_portal_file_id`、`knowledge_portal_file_name`
 - 当 `parse_after_upload=true` 时，所有更新成功的 RAGFlow 文档会在最后统一触发一次批量解析

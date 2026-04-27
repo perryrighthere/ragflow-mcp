@@ -905,6 +905,10 @@ curl --request POST \
 
 自动注入的 `meta_fields`：
 
+- `knowledgeDatabaseId`：RAGFlow dataset id
+- `ragFileId`：当前文档在 RAGFlow 中的 document id
+- `originFileId`：文档在知识门户中的 `fdId`
+- `tenantId`：当前 RAGFlow API key
 - `knowledge_portal_fd_id`
 - `knowledge_portal_fd_no`
 - `knowledge_portal_fd_name`
@@ -920,6 +924,7 @@ curl --request POST \
 说明：
 
 - 自动注入字段会与调用方传入的 `document_update.meta_fields` 合并。
+- 每个 RAGFlow 文档更新成功后，服务会将 `knowledgeDatabaseId`、`ragFileId`、`originFileId`、`tenantId` 同步到 `RAG_INFO_SYNC_URL` 指向的数据表接口；同步失败会记录到 `data.errors[]`，不阻断其他文档继续导入。
 - 若门户文档没有附件或封面，但存在正文内容，且 `fallback_to_content_markdown=true`，服务会上传自动生成的 `content.md`。
 - 每处理完一篇门户文档，服务都会尝试清理本地缓存目录；清理失败会记入 `errors`。
 
@@ -931,6 +936,7 @@ curl --request POST \
 | --- | --- | --- | --- |
 | `RAGFLOW_BASE_URL` | 否 | 空 | Raw API 与检索增强问答访问上游 RAGFlow |
 | `RAGFLOW_API_KEY` | 否 | 空 | 上游 RAGFlow API Key |
+| `RAG_INFO_SYNC_URL` | 否 | `http://paas.dev.seres.cn/kwb-oa/v1/kwRagFileInfo/syncRagInfo` | 导入 RAGFlow 后同步文档身份字段的数据表接口 |
 | `LLM_BASE_URL` | 否 | 空 | 问答接口使用的 OpenAI 兼容 LLM 根地址 |
 | `LLM_API_KEY` | 否 | 空 | LLM API Key |
 | `LLM_MODEL` | 否 | 空 | LLM 模型名 |
