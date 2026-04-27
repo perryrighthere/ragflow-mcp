@@ -106,6 +106,7 @@ Cache-Control: no-cache
 | `POST` | `/api/v1/qa/answer/stream` | Knowledge Base QA | 单轮问答流式接口 |
 | `POST` | `/api/v1/qa/conversations/answer/stream` | Knowledge Base QA | 带会话历史的流式问答接口 |
 | `GET` | `/api/v1/qa/conversations` | Knowledge Base QA | 按用户查询历史会话列表 |
+| `DELETE` | `/api/v1/qa/conversations/{conversation_id}` | Knowledge Base QA | 删除用户历史会话 |
 | `POST` | `/api/v1/knowledge-portal/documents/sync` | Knowledge Portal | 同步并下载知识门户文档 |
 | `POST` | `/api/v1/knowledge-portal/documents/import` | Knowledge Portal | 同步知识门户文档并导入 RAGFlow |
 
@@ -721,6 +722,67 @@ curl --request GET \
       }
     ]
   }
+}
+```
+
+### 4.5 `DELETE /api/v1/qa/conversations/{conversation_id}`
+
+按用户删除本地 SQLite 中保存的一条历史会话。
+
+#### 行为说明
+
+- `user_id` 必填，用于确认只能删除该用户自己的会话。
+- 删除会话时会同步删除该会话的原始消息；历史摘要保存在会话记录中，也会一并删除。
+- 如果 `conversation_id` 不存在，接口返回 `400`。
+- 如果 `conversation_id` 属于其他用户，接口返回 `400`。
+- 该接口只写入本地会话库，不会调用 RAGFlow 或 LLM。
+
+#### 路径参数
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `conversation_id` | `string` | 是 | 要删除的会话 ID |
+
+#### 查询参数
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `user_id` | `string` | 是 | 无 | 逻辑用户 ID |
+
+请求示例：
+
+```bash
+curl --request DELETE \
+  --url 'http://127.0.0.1:8080/api/v1/qa/conversations/b01eed84b85611efa0e90242ac120005?user_id=user_001'
+```
+
+响应结构：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `code` | `integer` | 固定为 `0` |
+| `data.user_id` | `string` | 当前用户 ID |
+| `data.conversation_id` | `string` | 已删除的会话 ID |
+| `data.deleted` | `boolean` | 固定为 `true` |
+
+响应示例：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "user_id": "user_001",
+    "conversation_id": "b01eed84b85611efa0e90242ac120005",
+    "deleted": true
+  }
+}
+```
+
+错误示例：
+
+```json
+{
+  "detail": "conversation_id does not belong to the provided user_id"
 }
 ```
 

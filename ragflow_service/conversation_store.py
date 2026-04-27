@@ -229,6 +229,25 @@ class ConversationStore:
             created=False,
         )
 
+    def delete_conversation(self, *, user_id: str, conversation_id: str) -> None:
+        normalized_user_id = self._normalize_identifier(user_id, field_name="user_id")
+        normalized_conversation_id = self._normalize_identifier(conversation_id, field_name="conversation_id")
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT user_id FROM conversations WHERE conversation_id = ?",
+                (normalized_conversation_id,),
+            ).fetchone()
+            if row is None:
+                raise ValidationError("conversation_id does not exist")
+            if row["user_id"] != normalized_user_id:
+                raise ValidationError("conversation_id does not belong to the provided user_id")
+
+            conn.execute(
+                "DELETE FROM conversations WHERE conversation_id = ?",
+                (normalized_conversation_id,),
+            )
+
     def _initialize(self) -> None:
         with self._connect() as conn:
             conn.execute(

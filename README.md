@@ -141,6 +141,7 @@ docker run --rm \
 - `POST /api/v1/qa/answer/stream`
 - `POST /api/v1/qa/conversations/answer/stream`
 - `GET /api/v1/qa/conversations`
+- `DELETE /api/v1/qa/conversations/{conversation_id}`
 - `POST /api/v1/knowledge-portal/documents/sync`
 - `POST /api/v1/knowledge-portal/documents/import`
 - `GET /api/v1/datasets/{dataset_id}/documents`
@@ -287,6 +288,37 @@ curl --request GET \
         "updated_at": "2026-04-23T08:00:10+00:00"
       }
     ]
+  }
+}
+```
+
+## 历史会话删除接口
+
+接口：`DELETE /api/v1/qa/conversations/{conversation_id}`
+
+行为：
+
+- 按 `user_id + conversation_id` 删除该用户自己的历史会话
+- 会一并删除该会话的原始消息和历史摘要
+- 如果 `conversation_id` 不存在，或不属于当前 `user_id`，接口返回 `400`
+- 该接口只写入本地 SQLite 会话库，不会调用 RAGFlow 或 LLM
+
+请求示例：
+
+```bash
+curl --request DELETE \
+  --url 'http://127.0.0.1:8080/api/v1/qa/conversations/b01eed84b85611efa0e90242ac120005?user_id=user_001'
+```
+
+响应示例：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "user_id": "user_001",
+    "conversation_id": "b01eed84b85611efa0e90242ac120005",
+    "deleted": true
   }
 }
 ```

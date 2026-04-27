@@ -688,6 +688,82 @@ class HttpServerApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json(), {"detail": "user_id is required"})
 
+    def test_delete_conversation_route_removes_user_scoped_history(self):
+        self.fake_client.qa_mode = True
+
+        for conversation_id in ["conv-delete", "conv-keep"]:
+            with self.client.stream(
+                "POST",
+                "/api/v1/qa/conversations/answer/stream",
+                json={
+                    "user_id": "user-1",
+                    "conversation_id": conversation_id,
+                    "question": f"{conversation_id} 的问题？",
+                    "dataset_ids": ["kb_123"],
+                },
+            ) as response:
+                self.assertEqual(response.status_code, 200)
+                _ = [json.loads(line) for line in response.iter_lines() if line]
+
+        response = self.client.delete(
+            "/api/v1/qa/conversations/conv-delete",
+            params={"user_id": "user-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {"code": 0, "data": {"user_id": "user-1", "conversation_id": "conv-delete", "deleted": True}},
+        )
+        response = self.client.get("/api/v1/qa/conversations", params={"user_id": "user-1"})
+        payload = response.json()["data"]
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["conversations"][0]["conversation_id"], "conv-keep")
+
+    def test_delete_conversation_route_rejects_other_users_conversation_id(self):
+        self.fake_client.qa_mode = True
+
+        with self.client.stream(
+            "POST",
+            "/api/v1/qa/conversations/answer/stream",
+            json={
+                "user_id": "user-1",
+                "conversation_id": "conv-owned",
+                "question": "用户一的问题？",
+                "dataset_ids": ["kb_123"],
+            },
+        ) as response:
+            self.assertEqual(response.status_code, 200)
+            _ = [json.loads(line) for line in response.iter_lines() if line]
+
+        response = self.client.delete(
+            "/api/v1/qa/conversations/conv-owned",
+            params={"user_id": "user-2"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"detail": "conversation_id does not belong to the provided user_id"})
+
+    def test_delete_conversation_route_does_not_require_ragflow_or_llm_config(self):
+        app = create_application(
+            Settings(
+                ragflow_base_url="",
+                ragflow_api_key="",
+                llm_base_url="",
+                llm_api_key="",
+                llm_model="",
+                conversation_db_path=f"{self.tempdir.name}/conversation-delete-only.sqlite3",
+            )
+        )
+        store = app.state.runtime.get_conversation_store()
+        store.get_or_create_conversation(user_id="user-1", conversation_id="history-only")
+        client = TestClient(app)
+
+        response = client.delete("/api/v1/qa/conversations/history-only", params={"user_id": "user-1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["data"]["deleted"])
+
     def test_list_conversations_route_does_not_require_ragflow_or_llm_config(self):
         app = create_application(
             Settings(

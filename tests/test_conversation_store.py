@@ -82,6 +82,44 @@ class ConversationStoreTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 store.list_conversations_by_user(user_id=" ")
 
+    def test_store_deletes_conversation_for_matching_user(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "conversations.sqlite3"
+            store = ConversationStore(db_path, recent_turn_window=2, summary_max_chars=1000)
+            first = store.get_or_create_conversation(user_id="user-a", conversation_id="conv-a")
+            store.append_turn(
+                user_id="user-a",
+                conversation_id=first.conversation_id,
+                user_message="要删除的问题？",
+                assistant_message="要删除的答案。",
+            )
+            second = store.get_or_create_conversation(user_id="user-a", conversation_id="conv-b")
+            store.append_turn(
+                user_id="user-a",
+                conversation_id=second.conversation_id,
+                user_message="保留的问题？",
+                assistant_message="保留的答案。",
+            )
+
+            store.delete_conversation(user_id="user-a", conversation_id="conv-a")
+            result = store.list_conversations_by_user(user_id="user-a", page=1, page_size=10)
+
+        self.assertEqual(result.total, 1)
+        self.assertEqual(result.conversations[0].conversation_id, "conv-b")
+        self.assertEqual(
+            [(message.role, message.content) for message in result.conversations[0].recent_messages],
+            [("user", "保留的问题？"), ("assistant", "保留的答案。")],
+        )
+
+    def test_store_rejects_delete_from_other_user(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "conversations.sqlite3"
+            store = ConversationStore(db_path, recent_turn_window=2, summary_max_chars=1000)
+            state = store.get_or_create_conversation(user_id="user-a", conversation_id="conv-shared")
+
+            with self.assertRaises(ValidationError):
+                store.delete_conversation(user_id="user-b", conversation_id=state.conversation_id)
+
     def test_store_keeps_recent_window_and_summarizes_older_turns(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "conversations.sqlite3"

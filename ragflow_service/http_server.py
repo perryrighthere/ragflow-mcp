@@ -330,6 +330,28 @@ def create_application(settings: Settings | None = None):
         )
         return JSONResponse(status_code=200, content={"code": 0, "data": _conversation_history_page_payload(history_page)})
 
+    @app.delete("/api/v1/qa/conversations/{conversation_id}", tags=["Knowledge Base QA"])
+    async def delete_user_conversation(
+        conversation_id: str,
+        user_id: str = Query(..., description="Logical user ID used to isolate conversation history."),
+    ) -> JSONResponse:
+        await run_in_threadpool(
+            runtime.get_conversation_store().delete_conversation,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "code": 0,
+                "data": {
+                    "user_id": str(user_id).strip(),
+                    "conversation_id": str(conversation_id).strip(),
+                    "deleted": True,
+                },
+            },
+        )
+
     @app.get("/api/v1/qa/prompt-templates", tags=["Knowledge Base QA"])
     async def get_prompt_templates() -> JSONResponse:
         return JSONResponse(status_code=200, content={"code": 0, "data": get_prompt_template_metadata()})
