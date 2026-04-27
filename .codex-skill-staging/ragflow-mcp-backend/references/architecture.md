@@ -33,6 +33,8 @@
 5. The service calls `client.update_document()` once per returned document when metadata or document options are present.
 6. The service optionally calls `client.parse_documents()` after all updates.
 
+For knowledge-portal imports, read `ragflow-document-import.md` before changing upload/update/parse behavior. That flow has extra invariants around cached portal files, metadata sync, RAGFlow document state rechecks, and PPTX `presentation` parsing.
+
 ### Retrieval With Metadata Filters
 
 1. `/api/v1/retrieval` parses JSON and coerces booleans, integers, and floats in `http_server.py`.

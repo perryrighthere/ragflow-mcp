@@ -53,3 +53,4 @@ Read only what you need:
 
 - `references/architecture.md` for file ownership, request flows, and common change paths
 - `references/api-contracts.md` for local routes, upstream RAGFlow endpoints, and payload rules
+- `references/ragflow-document-import.md` for knowledge-portal document import, upload-update-parse orchestration, and PPTX/presentation parsing pitfalls

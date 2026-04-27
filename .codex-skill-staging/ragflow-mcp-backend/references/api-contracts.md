@@ -80,6 +80,8 @@
 - `POST /api/v1/retrieval`
 - `GET /v1/system/healthz`
 
+For import orchestration, `GET /api/v1/datasets/{dataset_id}/documents?id={document_id}` is not just diagnostic: it is the source of truth for the uploaded document's final `name`, `location`, `type`, `chunk_method`, `parser_config`, and `run` fields before parsing. See `ragflow-document-import.md`.
+
 ## Response and Error Conventions
 
 - Successful local responses use `{ "success": true, "data": ... }`.
