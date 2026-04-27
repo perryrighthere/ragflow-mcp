@@ -24,7 +24,7 @@ class FakeHTTPResponse:
 
 
 class RagflowClientTests(unittest.TestCase):
-    def test_request_json_logs_full_raw_command_details(self):
+    def test_request_json_logs_request_details_with_redacted_auth(self):
         client = RagflowClient("http://ragflow.local:9380", "secret-key")
 
         with patch(
@@ -35,13 +35,14 @@ class RagflowClientTests(unittest.TestCase):
                 client.request_json("POST", "/api/v1/retrieval", json_body={"question": "五看六定"})
 
         output = "\n".join(captured.output)
-        self.assertIn('RAGFlow request headers -> {"Accept": "application/json", "Content-Type": "application/json", "Authorization": "Bearer secret-key"}', output)
+        self.assertIn('RAGFlow request headers -> {"Accept": "application/json", "Content-Type": "application/json", "Authorization": "<redacted>"}', output)
         self.assertIn('RAGFlow request raw body -> {"question": "五看六定"}', output)
         self.assertIn("RAGFlow request curl ->", output)
         self.assertIn("--request POST", output)
         self.assertIn("--url http://ragflow.local:9380/api/v1/retrieval", output)
-        self.assertIn("--header 'Authorization: Bearer secret-key'", output)
+        self.assertIn("--header 'Authorization: <redacted>'", output)
         self.assertIn("--data-raw '{\"question\": \"五看六定\"}'", output)
+        self.assertNotIn("Bearer secret-key", output)
 
     def test_request_json_redacts_tenant_id_from_logs_only(self):
         client = RagflowClient("http://ragflow.local:9380", "secret-key")

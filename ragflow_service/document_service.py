@@ -8,7 +8,7 @@ from typing import Any
 from .exceptions import RagInfoSyncError, RagflowAPIError, ValidationError
 from .knowledge_portal_service import KnowledgePortalSyncService
 from .rag_info_sync_client import RagInfoSyncClient
-from .ragflow_client import FileUpload, RagflowClient, UpstreamResponse
+from .ragflow_client import LOGGER, FileUpload, RagflowClient, UpstreamResponse
 
 
 PRESENTATION_FILE_EXTENSIONS = {".pptx"}
@@ -64,6 +64,7 @@ class RagflowDocumentService:
             errors = []
             sync_result["errors"] = errors
         parse_document_ids: list[str] = []
+        parse_candidates: list[dict[str, Any]] = []
         uploaded_file_count = 0
         updated_document_count = 0
 
@@ -122,6 +123,7 @@ class RagflowDocumentService:
                         detail_data=detail_data,
                         portal_document=portal_document,
                         upload_source=upload_source,
+                        uploaded_document=uploaded_document,
                     )
                     rag_info_payload = self._build_rag_info_payload(
                         dataset_id=normalized["dataset_id"],
@@ -154,6 +156,15 @@ class RagflowDocumentService:
                         )
                         ragflow_entry["status"] = "uploaded"
                         ragflow_documents.append(ragflow_entry)
+                        parse_candidates.append(
+                            {
+                                "document_id": uploaded_document["id"],
+                                "update_payload": update_payload,
+                                "upload_source": upload_source,
+                                "uploaded_document": uploaded_document,
+                                "update_succeeded": False,
+                            }
+                        )
                         continue
 
                     updated_document_count += 1
@@ -167,7 +178,29 @@ class RagflowDocumentService:
                                 exc=exc,
                             )
                         )
+                    parse_group = self._build_parse_group(
+                        update_payload,
+                        upload_source=upload_source,
+                        uploaded_document=uploaded_document,
+                    )
+                    LOGGER.info(
+                        "RAGFlow import document classified -> document_id=%s name=%s chunk_method=%s parse_group=%s upload_source=%s",
+                        uploaded_document["id"],
+                        uploaded_document["name"],
+                        update_payload.get("chunk_method"),
+                        parse_group,
+                        self._serialize_upload_source(upload_source),
+                    )
                     parse_document_ids.append(uploaded_document["id"])
+                    parse_candidates.append(
+                        {
+                            "document_id": uploaded_document["id"],
+                            "update_payload": update_payload,
+                            "upload_source": upload_source,
+                            "uploaded_document": uploaded_document,
+                            "update_succeeded": True,
+                        }
+                    )
                     ragflow_entry["status"] = "updated"
                     ragflow_entry["meta_fields"] = update_payload.get("meta_fields", {})
                     ragflow_documents.append(ragflow_entry)
@@ -194,16 +227,43 @@ class RagflowDocumentService:
                     )
 
         parse_result = None
-        if normalized["parse_after_upload"] and parse_document_ids:
-            try:
-                parse_response = self.client.parse_documents(
-                    normalized["dataset_id"],
-                    {"document_ids": parse_document_ids},
-                )
-                self._require_success_response(parse_response, action="parse documents")
-                parse_result = parse_response.payload
-            except RagflowAPIError as exc:
-                errors.append(self._build_ragflow_error("parse", fd_id="", exc=exc))
+        if normalized["parse_after_upload"] and parse_candidates:
+            parse_results: list[dict[str, Any]] = []
+            parse_document_groups = self._build_parse_document_groups(
+                normalized["dataset_id"],
+                parse_candidates,
+                errors,
+            )
+            parse_document_ids = parse_document_groups["default"] + parse_document_groups["presentation"]
+            for group_name in ("default", "presentation"):
+                group_document_ids = parse_document_groups[group_name]
+                if not group_document_ids:
+                    continue
+                try:
+                    LOGGER.info(
+                        "RAGFlow parse batch -> group=%s count=%s document_ids=%s",
+                        group_name,
+                        len(group_document_ids),
+                        group_document_ids,
+                    )
+                    parse_response = self.client.parse_documents(
+                        normalized["dataset_id"],
+                        {"document_ids": group_document_ids},
+                    )
+                    self._require_success_response(parse_response, action=f"parse {group_name} documents")
+                    parse_results.append(
+                        {
+                            "group": group_name,
+                            "document_ids": group_document_ids,
+                            "response": parse_response.payload,
+                        }
+                    )
+                except RagflowAPIError as exc:
+                    errors.append(self._build_ragflow_error("parse", fd_id="", exc=exc))
+            if len(parse_results) == 1:
+                parse_result = parse_results[0]["response"]
+            elif parse_results:
+                parse_result = {"batches": parse_results}
 
         return {
             "dataset_id": normalized["dataset_id"],
@@ -377,6 +437,8 @@ class RagflowDocumentService:
                 {
                     "id": document_id,
                     "name": str(item.get("name") or item.get("location") or document_id),
+                    "location": str(item.get("location") or ""),
+                    "type": str(item.get("type") or ""),
                 }
             )
         return uploaded_documents
@@ -390,6 +452,7 @@ class RagflowDocumentService:
         detail_data: dict[str, Any],
         portal_document: dict[str, Any],
         upload_source: dict[str, Any],
+        uploaded_document: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         payload = deepcopy(base_update)
         user_meta_fields = payload.get("meta_fields") or {}
@@ -407,9 +470,156 @@ class RagflowDocumentService:
                 fd_id=fd_id,
             ),
         }
-        if self._is_presentation_upload(upload_source):
+        if self._is_presentation_upload(upload_source, uploaded_document=uploaded_document):
             payload["chunk_method"] = "presentation"
+            payload["parser_config"] = self._build_presentation_parser_config(payload.get("parser_config"))
         return payload
+
+    def _build_presentation_parser_config(self, parser_config: Any) -> dict[str, Any]:
+        if not isinstance(parser_config, dict):
+            return {"raptor": {"use_raptor": False}}
+        raptor = parser_config.get("raptor")
+        if isinstance(raptor, dict):
+            return {"raptor": deepcopy(raptor)}
+        return {"raptor": {"use_raptor": False}}
+
+    def _build_parse_document_groups(
+        self,
+        dataset_id: str,
+        parse_candidates: list[dict[str, Any]],
+        errors: list[dict[str, Any]],
+    ) -> dict[str, list[str]]:
+        groups: dict[str, list[str]] = {"default": [], "presentation": []}
+        for candidate in parse_candidates:
+            document_id = str(candidate["document_id"])
+            update_payload = candidate["update_payload"]
+            upload_source = candidate["upload_source"]
+            uploaded_document = candidate["uploaded_document"]
+            ragflow_document = self._load_ragflow_document_for_parse(dataset_id, document_id, errors)
+            parse_group = self._build_parse_group(
+                update_payload,
+                upload_source=upload_source,
+                uploaded_document=uploaded_document,
+                ragflow_document=ragflow_document,
+            )
+            update_succeeded = bool(candidate.get("update_succeeded", True))
+            if not update_succeeded and parse_group != "presentation":
+                LOGGER.info(
+                    "RAGFlow parse candidate skipped after update failure -> document_id=%s parse_group=%s",
+                    document_id,
+                    parse_group,
+                )
+                continue
+            if parse_group == "presentation":
+                self._ensure_presentation_document_config(
+                    dataset_id=dataset_id,
+                    document_id=document_id,
+                    update_payload=update_payload,
+                    ragflow_document=ragflow_document,
+                    errors=errors,
+                )
+            LOGGER.info(
+                "RAGFlow parse candidate classified -> document_id=%s upload_name=%s ragflow_name=%s ragflow_location=%s ragflow_type=%s ragflow_chunk_method=%s parse_group=%s",
+                document_id,
+                uploaded_document.get("name"),
+                (ragflow_document or {}).get("name"),
+                (ragflow_document or {}).get("location"),
+                (ragflow_document or {}).get("type"),
+                (ragflow_document or {}).get("chunk_method"),
+                parse_group,
+            )
+            groups[parse_group].append(document_id)
+        return groups
+
+    def _load_ragflow_document_for_parse(
+        self,
+        dataset_id: str,
+        document_id: str,
+        errors: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        try:
+            response = self.client.list_documents(dataset_id, {"id": document_id})
+            self._require_success_response(response, action=f"list document {document_id}")
+        except RagflowAPIError as exc:
+            errors.append(self._build_ragflow_error("list_document", fd_id="", exc=exc, document_id=document_id))
+            return None
+        document = self._extract_listed_document(response.payload, document_id)
+        if document is None:
+            LOGGER.info("RAGFlow listed document not found -> document_id=%s", document_id)
+        return document
+
+    def _extract_listed_document(self, payload: Any, document_id: str) -> dict[str, Any] | None:
+        if not isinstance(payload, dict):
+            return None
+        data = payload.get("data")
+        docs = None
+        if isinstance(data, dict):
+            docs = data.get("docs")
+        elif isinstance(data, list):
+            docs = data
+        if not isinstance(docs, list):
+            return None
+        for item in docs:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("id") or "").strip() == document_id:
+                return {
+                    "id": document_id,
+                    "name": str(item.get("name") or ""),
+                    "location": str(item.get("location") or ""),
+                    "type": str(item.get("type") or ""),
+                    "chunk_method": str(item.get("chunk_method") or ""),
+                    "parser_config": item.get("parser_config") if isinstance(item.get("parser_config"), dict) else {},
+                    "run": str(item.get("run") or ""),
+                }
+        return None
+
+    def _ensure_presentation_document_config(
+        self,
+        *,
+        dataset_id: str,
+        document_id: str,
+        update_payload: dict[str, Any],
+        ragflow_document: dict[str, Any] | None,
+        errors: list[dict[str, Any]],
+    ) -> None:
+        current_method = str((ragflow_document or {}).get("chunk_method") or update_payload.get("chunk_method") or "")
+        if current_method.strip().lower() == "presentation":
+            return
+        presentation_payload = deepcopy(update_payload)
+        presentation_payload["chunk_method"] = "presentation"
+        presentation_payload["parser_config"] = self._build_presentation_parser_config(
+            presentation_payload.get("parser_config")
+        )
+        try:
+            response = self.client.update_document(dataset_id, document_id, presentation_payload)
+            self._require_success_response(response, action=f"ensure presentation document {document_id}")
+            update_payload.clear()
+            update_payload.update(presentation_payload)
+            LOGGER.info("RAGFlow presentation config ensured -> document_id=%s", document_id)
+        except RagflowAPIError as exc:
+            errors.append(self._build_ragflow_error("ensure_presentation", fd_id="", exc=exc, document_id=document_id))
+
+    def _build_parse_group(
+        self,
+        update_payload: dict[str, Any],
+        *,
+        upload_source: dict[str, Any] | None = None,
+        uploaded_document: dict[str, str] | None = None,
+        ragflow_document: dict[str, Any] | None = None,
+    ) -> str:
+        chunk_method = str(
+            update_payload.get("chunk_method") or (ragflow_document or {}).get("chunk_method") or ""
+        ).strip().lower()
+        if chunk_method == "presentation":
+            return "presentation"
+        if upload_source is not None and self._is_presentation_upload(
+            upload_source,
+            uploaded_document=uploaded_document,
+            ragflow_document=ragflow_document,
+        ):
+            return "presentation"
+        return "default"
 
     def _build_rag_info_payload(self, *, dataset_id: str, document_id: str, fd_id: str) -> dict[str, str]:
         return {
@@ -431,7 +641,13 @@ class RagflowDocumentService:
             )
         return response
 
-    def _is_presentation_upload(self, upload_source: dict[str, Any]) -> bool:
+    def _is_presentation_upload(
+        self,
+        upload_source: dict[str, Any],
+        *,
+        uploaded_document: dict[str, str] | None = None,
+        ragflow_document: dict[str, Any] | None = None,
+    ) -> bool:
         names = [
             str(upload_source.get("portal_file_name") or ""),
             str(upload_source.get("path") or ""),
@@ -439,6 +655,16 @@ class RagflowDocumentService:
         upload = upload_source.get("upload")
         if isinstance(upload, FileUpload):
             names.append(upload.filename)
+        if uploaded_document is not None:
+            names.extend(str(uploaded_document.get(key) or "") for key in ("name", "location"))
+            document_type = str(uploaded_document.get("type") or "").strip().lower()
+            if document_type in {"ppt", "pptx", "presentation"}:
+                return True
+        if ragflow_document is not None:
+            names.extend(str(ragflow_document.get(key) or "") for key in ("name", "location"))
+            document_type = str(ragflow_document.get("type") or "").strip().lower()
+            if document_type in {"ppt", "pptx", "presentation"}:
+                return True
         return any(Path(name).suffix.lower() in PRESENTATION_FILE_EXTENSIONS for name in names if name)
 
     def _build_knowledge_portal_meta_fields(

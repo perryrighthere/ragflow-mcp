@@ -244,8 +244,9 @@ class RagflowClient:
     ) -> None:
         log_payload = self._redact_sensitive_payload(payload)
         log_raw_body_text = self._redact_raw_body_text(raw_body_text)
+        log_headers = self._redact_sensitive_headers(headers)
         LOGGER.info("RAGFlow request -> %s %s auth=%s", method.upper(), url, "on" if use_auth else "off")
-        LOGGER.info("RAGFlow request headers -> %s", self._render_log_payload(headers))
+        LOGGER.info("RAGFlow request headers -> %s", self._render_log_payload(log_headers))
         if log_payload is not None:
             LOGGER.info("RAGFlow request payload -> %s", self._render_log_payload(log_payload))
         if log_raw_body_text is not None:
@@ -262,7 +263,7 @@ class RagflowClient:
             LOGGER.info("RAGFlow request files -> %s", self._render_log_payload(file_payload))
         LOGGER.info(
             "RAGFlow request curl -> %s",
-            self._build_curl_command(method, url, headers, raw_body_text=log_raw_body_text, files=files),
+            self._build_curl_command(method, url, log_headers, raw_body_text=log_raw_body_text, files=files),
         )
 
     def _log_response(self, response: UpstreamResponse) -> None:
@@ -304,6 +305,15 @@ class RagflowClient:
         except json.JSONDecodeError:
             return raw_body_text
         return json.dumps(self._redact_sensitive_payload(payload), ensure_ascii=False)
+
+    def _redact_sensitive_headers(self, headers: dict[str, str]) -> dict[str, str]:
+        redacted: dict[str, str] = {}
+        for key, value in headers.items():
+            if key.lower() in {"authorization", "x-api-key", "api-key"} and value:
+                redacted[key] = "<redacted>"
+            else:
+                redacted[key] = value
+        return redacted
 
     def _build_curl_command(
         self,
