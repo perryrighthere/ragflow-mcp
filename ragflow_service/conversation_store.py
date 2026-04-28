@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from .exceptions import ValidationError
 
@@ -13,6 +15,7 @@ from .exceptions import ValidationError
 class ConversationMessage:
     role: str
     content: str
+    referenced_documents: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -146,11 +149,13 @@ class ConversationStore:
         conversation_id: str,
         user_message: str,
         assistant_message: str,
+        referenced_documents: Any = None,
     ) -> ConversationState:
         normalized_user_id = self._normalize_identifier(user_id, field_name="user_id")
         normalized_conversation_id = self._normalize_identifier(conversation_id, field_name="conversation_id")
         normalized_user_message = str(user_message or "").strip()
         normalized_assistant_message = str(assistant_message or "").strip()
+        normalized_referenced_documents = _normalize_referenced_documents(referenced_documents)
         if not normalized_user_message:
             raise ValidationError("user_message is required")
         if not normalized_assistant_message:
@@ -169,12 +174,18 @@ class ConversationStore:
             now = _utc_now()
             conn.executemany(
                 """
-                INSERT INTO conversation_messages (conversation_id, role, content, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO conversation_messages (conversation_id, role, content, referenced_documents, created_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 [
-                    (normalized_conversation_id, "user", normalized_user_message, now),
-                    (normalized_conversation_id, "assistant", normalized_assistant_message, now),
+                    (normalized_conversation_id, "user", normalized_user_message, "[]", now),
+                    (
+                        normalized_conversation_id,
+                        "assistant",
+                        normalized_assistant_message,
+                        json.dumps(normalized_referenced_documents, ensure_ascii=False),
+                        now,
+                    ),
                 ],
             )
             conn.execute(
@@ -269,6 +280,7 @@ class ConversationStore:
                     conversation_id TEXT NOT NULL,
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
+                    referenced_documents TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
                 )
@@ -289,6 +301,14 @@ class ConversationStore:
             }
             if "title" not in columns:
                 conn.execute("ALTER TABLE conversations ADD COLUMN title TEXT NOT NULL DEFAULT ''")
+            message_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(conversation_messages)").fetchall()
+            }
+            if "referenced_documents" not in message_columns:
+                conn.execute(
+                    "ALTER TABLE conversation_messages ADD COLUMN referenced_documents TEXT NOT NULL DEFAULT '[]'"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self._db_path))
@@ -299,7 +319,7 @@ class ConversationStore:
     def _fetch_messages(self, conn: sqlite3.Connection, conversation_id: str) -> list[ConversationMessage]:
         rows = conn.execute(
             """
-            SELECT role, content
+            SELECT role, content, referenced_documents
             FROM conversation_messages
             WHERE conversation_id = ?
             ORDER BY id ASC
@@ -307,7 +327,11 @@ class ConversationStore:
             (conversation_id,),
         ).fetchall()
         return [
-            ConversationMessage(role=str(row["role"]), content=str(row["content"]))
+            ConversationMessage(
+                role=str(row["role"]),
+                content=str(row["content"]),
+                referenced_documents=_load_referenced_documents(row["referenced_documents"]),
+            )
             for row in rows
             if str(row["content"]).strip()
         ]
@@ -401,6 +425,26 @@ def _truncate(content: str, limit: int) -> str:
     if len(content) <= limit:
         return content
     return content[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _normalize_referenced_documents(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+
+    normalized = [dict(item) for item in value if isinstance(item, dict)]
+    try:
+        json.dumps(normalized, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return []
+    return normalized
+
+
+def _load_referenced_documents(value: Any) -> list[dict[str, Any]]:
+    try:
+        decoded = json.loads(str(value or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return _normalize_referenced_documents(decoded)
 
 
 def _utc_now() -> str:

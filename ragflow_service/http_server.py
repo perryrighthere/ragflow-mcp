@@ -541,7 +541,11 @@ def _build_conversation_qa_streaming_response(runtime: ServiceRuntime, request_p
 
     def stream() -> Any:
         history_messages = [
-            {"role": message.role, "content": message.content}
+            {
+                "role": message.role,
+                "content": message.content,
+                "referenced_documents": message.referenced_documents,
+            }
             for message in conversation_state.recent_messages
         ]
         context_payload = {
@@ -569,6 +573,7 @@ def _build_conversation_qa_streaming_response(runtime: ServiceRuntime, request_p
                 conversation_id=conversation_state.conversation_id,
                 user_message=prepared.question,
                 assistant_message=final_answer,
+                referenced_documents=prepared.referenced_documents,
             )
             conversation_title = conversation_state.title
             if conversation_state.created and not conversation_title:
@@ -629,6 +634,7 @@ def _build_conversation_qa_streaming_response(runtime: ServiceRuntime, request_p
                 conversation_id=conversation_state.conversation_id,
                 user_message=prepared.question,
                 assistant_message=answer,
+                referenced_documents=prepared.referenced_documents,
             )
             conversation_title = conversation_state.title
             if conversation_state.created and not conversation_title:
@@ -690,7 +696,11 @@ def _conversation_history_page_payload(history_page: ConversationHistoryPage) ->
                 "conversation_title": conversation.title,
                 "history_summary": conversation.summary,
                 "history_messages": [
-                    {"role": message.role, "content": message.content}
+                    {
+                        "role": message.role,
+                        "content": message.content,
+                        "referenced_documents": message.referenced_documents,
+                    }
                     for message in conversation.recent_messages
                 ],
                 "created_at": conversation.created_at,

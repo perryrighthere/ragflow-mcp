@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +20,14 @@ class ConversationStoreTests(unittest.TestCase):
                 conversation_id=first.conversation_id,
                 user_message="第一个问题？",
                 assistant_message="第一个答案。",
+                referenced_documents=[
+                    {
+                        "index": 1,
+                        "document_name": "流程说明书.docx",
+                        "dataset_id": "kb_123",
+                        "document_id": "doc_001",
+                    }
+                ],
             )
             second = store.get_or_create_conversation(user_id="user-a", conversation_id="conv-b")
             store.append_turn(
@@ -48,8 +57,25 @@ class ConversationStoreTests(unittest.TestCase):
         )
         self.assertEqual(first_result.title, "第一个会话")
         self.assertEqual(
-            [(message.role, message.content) for message in first_result.recent_messages],
-            [("user", "第一个问题？"), ("assistant", "第一个答案。")],
+            [
+                (message.role, message.content, message.referenced_documents)
+                for message in first_result.recent_messages
+            ],
+            [
+                ("user", "第一个问题？", []),
+                (
+                    "assistant",
+                    "第一个答案。",
+                    [
+                        {
+                            "index": 1,
+                            "document_name": "流程说明书.docx",
+                            "dataset_id": "kb_123",
+                            "document_id": "doc_001",
+                        }
+                    ],
+                ),
+            ],
         )
         self.assertTrue(first_result.created_at)
         self.assertTrue(first_result.updated_at)
@@ -168,6 +194,64 @@ class ConversationStoreTests(unittest.TestCase):
 
             with self.assertRaises(ValidationError):
                 store.set_title(user_id="user-b", conversation_id=state.conversation_id, title="错误标题")
+
+    def test_store_normalizes_invalid_referenced_documents_to_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "conversations.sqlite3"
+            store = ConversationStore(db_path, recent_turn_window=2, summary_max_chars=1000)
+            state = store.get_or_create_conversation(user_id="user-a", conversation_id="conv-a")
+
+            store.append_turn(
+                user_id="user-a",
+                conversation_id=state.conversation_id,
+                user_message="问题？",
+                assistant_message="答案。",
+                referenced_documents={"unexpected": "shape"},
+            )
+            updated = store.get_or_create_conversation(user_id="user-a", conversation_id=state.conversation_id)
+
+        self.assertEqual(updated.recent_messages[-1].referenced_documents, [])
+
+    def test_store_migrates_existing_message_table_for_referenced_documents(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "conversations.sqlite3"
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE conversations (
+                        conversation_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        title TEXT NOT NULL DEFAULT '',
+                        summary TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE conversation_messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        conversation_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+
+            store = ConversationStore(db_path, recent_turn_window=2, summary_max_chars=1000)
+            state = store.get_or_create_conversation(user_id="user-a", conversation_id="conv-a")
+            store.append_turn(
+                user_id="user-a",
+                conversation_id=state.conversation_id,
+                user_message="问题？",
+                assistant_message="答案。",
+                referenced_documents=[{"index": 1, "document_name": "doc-a"}],
+            )
+            updated = store.get_or_create_conversation(user_id="user-a", conversation_id=state.conversation_id)
+
+        self.assertEqual(updated.recent_messages[-1].referenced_documents, [{"index": 1, "document_name": "doc-a"}])
 
 
 if __name__ == "__main__":

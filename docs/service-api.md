@@ -567,6 +567,7 @@ curl -N --request POST \
 - 若传入的 `conversation_id` 已归属于其他 `user_id`，接口返回 `400`。
 - 历史消息存储在 SQLite 中，默认路径为 `output/conversations.sqlite3`。
 - 服务保留最近若干轮原始消息，并把更早历史压缩为文本摘要。
+- 每条原始历史消息会保存并返回 `referenced_documents` 引用来源列表；无引用时为空数组。
 - 首轮回答结束后，如果会话尚无标题，服务会额外调用一次 LLM 生成 `conversation_title`。
 
 相关环境变量：
@@ -697,6 +698,7 @@ curl --request GET \
 | --- | --- | --- |
 | `role` | `string` | `user` 或 `assistant` |
 | `content` | `string` | 消息内容 |
+| `referenced_documents` | `object[]` | 该消息关联的引用来源列表；通常 assistant 消息有值，user 消息为空数组 |
 
 响应示例：
 
@@ -714,8 +716,19 @@ curl --request GET \
         "conversation_title": "五看首轮问答",
         "history_summary": "",
         "history_messages": [
-          {"role": "user", "content": "五看是什么？"},
-          {"role": "assistant", "content": "五看包括看行业、看市场、看用户、看竞争、看自己。"}
+          {"role": "user", "content": "五看是什么？", "referenced_documents": []},
+          {
+            "role": "assistant",
+            "content": "五看包括看行业、看市场、看用户、看竞争、看自己。",
+            "referenced_documents": [
+              {
+                "index": 1,
+                "document_name": "IPD-2.2.3.1-002 整车产品项目任务书开发流程说明书.docx",
+                "dataset_id": "kb_123",
+                "document_id": "doc_001"
+              }
+            ]
+          }
         ],
         "created_at": "2026-04-23T08:00:00+00:00",
         "updated_at": "2026-04-23T08:00:10+00:00"

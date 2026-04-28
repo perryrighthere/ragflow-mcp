@@ -646,8 +646,19 @@ class HttpServerApiTests(unittest.TestCase):
         self.assertEqual(
             first["history_messages"],
             [
-                {"role": "user", "content": "用户一的第一个问题？"},
-                {"role": "assistant", "content": "五看包括看行业、看市场、看用户、看竞争、看自己。"},
+                {"role": "user", "content": "用户一的第一个问题？", "referenced_documents": []},
+                {
+                    "role": "assistant",
+                    "content": "五看包括看行业、看市场、看用户、看竞争、看自己。",
+                    "referenced_documents": [
+                        {
+                            "index": 1,
+                            "document_name": "IPD-2.2.3.1-002 整车产品项目任务书开发流程说明书.docx",
+                            "dataset_id": "kb_123",
+                            "document_id": "doc_001",
+                        }
+                    ],
+                },
             ],
         )
         self.assertTrue(first["created_at"])

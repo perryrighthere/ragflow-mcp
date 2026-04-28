@@ -239,6 +239,7 @@ curl -N --request POST \
 - 新建会话的首轮回答完成后，服务端会额外调用一次 LLM 生成 `conversation_title`
 - `context.data.history_summary` 展示被压缩后的较早历史摘要
 - `context.data.history_messages` 展示当前保留在窗口中的最近几轮原始消息
+- `history_messages` 中每条消息会包含 `referenced_documents`；无引用时为空数组
 - `done.data.conversation_title` 为当前会话标题；后续续聊时会在 `context` 中直接返回已保存标题
 
 相关环境变量：
@@ -255,6 +256,7 @@ curl -N --request POST \
 
 - 按 `user_id` 查询该用户的历史会话列表
 - 返回会话标题、压缩后的较早历史摘要、当前保留窗口内的原始消息
+- 原始消息会带出保存的 `referenced_documents` 引用来源列表
 - 默认按 `updated_at` 倒序返回，支持分页
 - 该接口只读取本地 SQLite 会话库，不会调用 RAGFlow 或 LLM
 
@@ -281,8 +283,19 @@ curl --request GET \
         "conversation_title": "五看首轮问答",
         "history_summary": "",
         "history_messages": [
-          {"role": "user", "content": "五看是什么？"},
-          {"role": "assistant", "content": "五看包括看行业、看市场、看用户、看竞争、看自己。"}
+          {"role": "user", "content": "五看是什么？", "referenced_documents": []},
+          {
+            "role": "assistant",
+            "content": "五看包括看行业、看市场、看用户、看竞争、看自己。",
+            "referenced_documents": [
+              {
+                "index": 1,
+                "document_name": "IPD-2.2.3.1-002 整车产品项目任务书开发流程说明书.docx",
+                "dataset_id": "kb_123",
+                "document_id": "doc_001"
+              }
+            ]
+          }
         ],
         "created_at": "2026-04-23T08:00:00+00:00",
         "updated_at": "2026-04-23T08:00:10+00:00"
