@@ -37,7 +37,7 @@ class ConfigTests(unittest.TestCase):
                 "LLM_MODEL=test-model\n"
                 "LLM_TIMEOUT=30\n"
                 "RAG_INFO_SYNC_URL=http://sync.local/syncRagInfo\n"
-                "CORS_ALLOWED_ORIGINS=https://kmsai-uat.seres.cn/, https://kmsai-prod.seres.cn\n"
+                "CORS_ALLOWED_ORIGINS=http://localhost:1473, https://kmsai-uat.seres.cn/, https://kmsai-prod.seres.cn\n"
                 "SERVICE_PORT=9090\n",
                 encoding="utf-8",
             )
@@ -56,7 +56,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.rag_info_sync_url, "http://sync.local/syncRagInfo")
         self.assertEqual(
             settings.cors_allowed_origins,
-            ("https://kmsai-uat.seres.cn", "https://kmsai-prod.seres.cn"),
+            ("http://localhost:1473", "https://kmsai-uat.seres.cn", "https://kmsai-prod.seres.cn"),
         )
         self.assertEqual(settings.server_port, 9090)
         self.assertTrue(settings.conversation_db_path.endswith("conversations.sqlite3"))

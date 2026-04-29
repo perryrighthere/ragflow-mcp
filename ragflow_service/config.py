@@ -9,7 +9,11 @@ from .exceptions import ConfigError
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 DEFAULT_CONVERSATION_DB_PATH = str((Path(__file__).resolve().parent.parent / "output" / "conversations.sqlite3").resolve())
 DEFAULT_RAG_INFO_SYNC_URL = "http://paas.dev.seres.cn/kwb-oa/v1/kwRagFileInfo/syncRagInfo"
-DEFAULT_CORS_ALLOWED_ORIGINS = ("https://kmsai-uat.seres.cn", "https://kmsai-prod.seres.cn")
+DEFAULT_CORS_ALLOWED_ORIGINS = (
+    "http://localhost:1473",
+    "https://kmsai-uat.seres.cn",
+    "https://kmsai-prod.seres.cn",
+)
 
 
 @dataclass(frozen=True)

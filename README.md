@@ -133,7 +133,7 @@ docker run --rm \
 说明：
 
 - `LLM_BASE_URL` 需要指向 OpenAI 兼容接口根路径，例如 `https://api.openai.com/v1`
-- `CORS_ALLOWED_ORIGINS` 为逗号分隔的前端域名白名单，默认允许 `https://kmsai-uat.seres.cn` 和 `https://kmsai-prod.seres.cn`；浏览器 `Origin` 不包含结尾 `/`，配置中即使写了结尾 `/` 也会自动规范化
+- `CORS_ALLOWED_ORIGINS` 为逗号分隔的前端域名白名单，默认允许 `http://localhost:1473`、`https://kmsai-uat.seres.cn` 和 `https://kmsai-prod.seres.cn`；浏览器 `Origin` 不包含结尾 `/`，配置中即使写了结尾 `/` 也会自动规范化
 - 如果没配置 RAGFlow / LLM，页面仍能打开，但对应接口会返回 `503`
 
 ## 主要接口

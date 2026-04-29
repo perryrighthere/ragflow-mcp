@@ -236,6 +236,18 @@ class HttpServerApiTests(unittest.TestCase):
         self.assertEqual(response.headers["access-control-allow-origin"], "https://kmsai-uat.seres.cn")
         self.assertEqual(response.headers["access-control-allow-credentials"], "true")
 
+    def test_cors_preflight_allows_local_debug_origin(self):
+        response = self.client.options(
+            "/api/v1/retrieval",
+            headers={
+                "Origin": "http://localhost:1473",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["access-control-allow-origin"], "http://localhost:1473")
+
     def test_cors_preflight_rejects_unconfigured_origin(self):
         response = self.client.options(
             "/api/v1/retrieval",

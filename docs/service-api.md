@@ -1017,7 +1017,7 @@ curl --request POST \
 | `LLM_MODEL` | 否 | 空 | LLM 模型名 |
 | `RAGFLOW_TIMEOUT` | 否 | `60` | 上游 RAGFlow 超时 |
 | `LLM_TIMEOUT` | 否 | `60` | LLM 超时 |
-| `CORS_ALLOWED_ORIGINS` | 否 | `https://kmsai-uat.seres.cn,https://kmsai-prod.seres.cn` | 允许跨域访问本服务的前端域名白名单，逗号分隔；服务会自动去掉结尾 `/` |
+| `CORS_ALLOWED_ORIGINS` | 否 | `http://localhost:1473,https://kmsai-uat.seres.cn,https://kmsai-prod.seres.cn` | 允许跨域访问本服务的前端域名白名单，逗号分隔；服务会自动去掉结尾 `/` |
 | `SERVICE_HOST` | 否 | `0.0.0.0` | 服务监听地址 |
 | `SERVICE_PORT` | 否 | `8080` | 服务监听端口 |
 
