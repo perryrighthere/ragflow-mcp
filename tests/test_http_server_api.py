@@ -222,6 +222,32 @@ class HttpServerApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Swagger UI", response.text)
 
+    def test_cors_preflight_allows_configured_origin(self):
+        response = self.client.options(
+            "/api/v1/retrieval",
+            headers={
+                "Origin": "https://kmsai-uat.seres.cn",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["access-control-allow-origin"], "https://kmsai-uat.seres.cn")
+        self.assertEqual(response.headers["access-control-allow-credentials"], "true")
+
+    def test_cors_preflight_rejects_unconfigured_origin(self):
+        response = self.client.options(
+            "/api/v1/retrieval",
+            headers={
+                "Origin": "https://unexpected.example.com",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("access-control-allow-origin", response.headers)
+
     def test_prompt_template_route_returns_defaults(self):
         response = self.client.get("/api/v1/qa/prompt-templates")
 

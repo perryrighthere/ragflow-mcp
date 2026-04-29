@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ragflow_service.config import Settings
-from ragflow_service.config import DEFAULT_RAG_INFO_SYNC_URL
+from ragflow_service.config import DEFAULT_CORS_ALLOWED_ORIGINS, DEFAULT_RAG_INFO_SYNC_URL
 from ragflow_service.exceptions import ConfigError
 
 
@@ -22,6 +22,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.ragflow_api_key, "")
         self.assertEqual(settings.server_port, 9090)
         self.assertEqual(settings.rag_info_sync_url, DEFAULT_RAG_INFO_SYNC_URL)
+        self.assertEqual(settings.cors_allowed_origins, DEFAULT_CORS_ALLOWED_ORIGINS)
         self.assertFalse(settings.is_ragflow_configured())
 
     def test_from_env_uses_dotenv_when_os_env_missing(self):
@@ -36,6 +37,7 @@ class ConfigTests(unittest.TestCase):
                 "LLM_MODEL=test-model\n"
                 "LLM_TIMEOUT=30\n"
                 "RAG_INFO_SYNC_URL=http://sync.local/syncRagInfo\n"
+                "CORS_ALLOWED_ORIGINS=https://kmsai-uat.seres.cn/, https://kmsai-prod.seres.cn\n"
                 "SERVICE_PORT=9090\n",
                 encoding="utf-8",
             )
@@ -52,6 +54,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.llm_model, "test-model")
         self.assertEqual(settings.llm_timeout, 30.0)
         self.assertEqual(settings.rag_info_sync_url, "http://sync.local/syncRagInfo")
+        self.assertEqual(
+            settings.cors_allowed_origins,
+            ("https://kmsai-uat.seres.cn", "https://kmsai-prod.seres.cn"),
+        )
         self.assertEqual(settings.server_port, 9090)
         self.assertTrue(settings.conversation_db_path.endswith("conversations.sqlite3"))
         self.assertEqual(settings.conversation_recent_turns, 6)
@@ -99,6 +105,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.ragflow_base_url, "http://override.local:9000")
         self.assertEqual(settings.ragflow_api_key, "env-key")
 
+    def test_from_env_rejects_wildcard_cors_origin(self):
+        with patch.dict(os.environ, {"CORS_ALLOWED_ORIGINS": "*"}, clear=True):
+            with self.assertRaises(ConfigError):
+                Settings.from_sources({})
+
+    def test_from_env_uses_default_cors_origins_when_env_is_empty(self):
+        with patch.dict(os.environ, {"CORS_ALLOWED_ORIGINS": ""}, clear=True):
+            settings = Settings.from_sources({})
+
+        self.assertEqual(settings.cors_allowed_origins, DEFAULT_CORS_ALLOWED_ORIGINS)
+
     def test_with_overrides_updates_runtime_values(self):
         settings = Settings(
             ragflow_base_url="http://127.0.0.1:9380",
@@ -109,6 +126,7 @@ class ConfigTests(unittest.TestCase):
             request_timeout=60.0,
             llm_timeout=60.0,
             rag_info_sync_url="http://old-sync.local/sync",
+            cors_allowed_origins=("https://old.example.com",),
             server_host="0.0.0.0",
             server_port=8080,
         )
@@ -118,6 +136,7 @@ class ConfigTests(unittest.TestCase):
             llm_model="new-model",
             request_timeout=30.0,
             rag_info_sync_url="http://new-sync.local/sync",
+            cors_allowed_origins=("https://new.example.com/",),
             server_port=18080,
         )
 
@@ -126,6 +145,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(updated.llm_model, "new-model")
         self.assertEqual(updated.request_timeout, 30.0)
         self.assertEqual(updated.rag_info_sync_url, "http://new-sync.local/sync")
+        self.assertEqual(updated.cors_allowed_origins, ("https://new.example.com",))
         self.assertEqual(updated.server_port, 18080)
 
     def test_require_ragflow_raises_when_missing(self):

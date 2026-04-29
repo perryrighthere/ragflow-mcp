@@ -9,6 +9,7 @@ from .exceptions import ConfigError
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 DEFAULT_CONVERSATION_DB_PATH = str((Path(__file__).resolve().parent.parent / "output" / "conversations.sqlite3").resolve())
 DEFAULT_RAG_INFO_SYNC_URL = "http://paas.dev.seres.cn/kwb-oa/v1/kwRagFileInfo/syncRagInfo"
+DEFAULT_CORS_ALLOWED_ORIGINS = ("https://kmsai-uat.seres.cn", "https://kmsai-prod.seres.cn")
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class Settings:
     conversation_recent_turns: int = 6
     conversation_summary_max_chars: int = 4000
     rag_info_sync_url: str = DEFAULT_RAG_INFO_SYNC_URL
+    cors_allowed_origins: tuple[str, ...] = DEFAULT_CORS_ALLOWED_ORIGINS
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -67,6 +69,12 @@ class Settings:
             default=DEFAULT_RAG_INFO_SYNC_URL,
             prefer_os_env=prefer_os_env,
         )
+        cors_allowed_origins_raw = _get_config_value(
+            "CORS_ALLOWED_ORIGINS",
+            file_values,
+            default=",".join(DEFAULT_CORS_ALLOWED_ORIGINS),
+            prefer_os_env=prefer_os_env,
+        ) or ",".join(DEFAULT_CORS_ALLOWED_ORIGINS)
 
         try:
             timeout = float(timeout_raw)
@@ -93,6 +101,8 @@ class Settings:
         except ValueError as exc:
             raise ConfigError("CONVERSATION_SUMMARY_MAX_CHARS must be an integer") from exc
 
+        cors_allowed_origins = _parse_cors_allowed_origins(cors_allowed_origins_raw)
+
         return cls(
             ragflow_base_url=base_url.rstrip("/"),
             ragflow_api_key=api_key,
@@ -107,6 +117,7 @@ class Settings:
             conversation_recent_turns=conversation_recent_turns,
             conversation_summary_max_chars=conversation_summary_max_chars,
             rag_info_sync_url=rag_info_sync_url,
+            cors_allowed_origins=cors_allowed_origins,
         )
 
     def with_overrides(
@@ -125,6 +136,7 @@ class Settings:
         conversation_recent_turns: int | None = None,
         conversation_summary_max_chars: int | None = None,
         rag_info_sync_url: str | None = None,
+        cors_allowed_origins: tuple[str, ...] | list[str] | None = None,
     ) -> "Settings":
         return replace(
             self,
@@ -147,6 +159,11 @@ class Settings:
                 else self.conversation_summary_max_chars
             ),
             rag_info_sync_url=rag_info_sync_url if rag_info_sync_url is not None else self.rag_info_sync_url,
+            cors_allowed_origins=(
+                _normalize_cors_allowed_origins(cors_allowed_origins)
+                if cors_allowed_origins is not None
+                else self.cors_allowed_origins
+            ),
         )
 
     def require_ragflow(self) -> "Settings":
@@ -212,3 +229,22 @@ def _load_dotenv(path: Path) -> dict[str, str]:
         values[key] = value
 
     return values
+
+
+def _parse_cors_allowed_origins(raw_value: str) -> tuple[str, ...]:
+    return _normalize_cors_allowed_origins(raw_value.split(","))
+
+
+def _normalize_cors_allowed_origins(origins: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for raw_origin in origins:
+        origin = str(raw_origin).strip().rstrip("/")
+        if not origin:
+            continue
+        if origin == "*":
+            raise ConfigError("CORS_ALLOWED_ORIGINS must list explicit origins when credentials are enabled")
+        if not (origin.startswith("http://") or origin.startswith("https://")):
+            raise ConfigError("CORS_ALLOWED_ORIGINS entries must start with http:// or https://")
+        if origin not in normalized:
+            normalized.append(origin)
+    return tuple(normalized)

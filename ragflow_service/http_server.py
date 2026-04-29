@@ -18,6 +18,7 @@ try:
     import uvicorn
     from fastapi.concurrency import run_in_threadpool
     from fastapi import FastAPI, File, Query, Request, UploadFile
+    from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, ConfigDict, Field
@@ -26,6 +27,7 @@ except ImportError as exc:  # pragma: no cover - exercised only when deps are mi
     run_in_threadpool = None
     FastAPI = None
     File = Query = Request = UploadFile = None
+    CORSMiddleware = None
     FileResponse = JSONResponse = PlainTextResponse = RedirectResponse = Response = StreamingResponse = None
     StaticFiles = None
     BaseModel = object
@@ -253,6 +255,16 @@ def create_application(settings: Settings | None = None):
         version="3.0.0",
     )
     app.state.runtime = runtime
+
+    if settings.cors_allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.cors_allowed_origins),
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            allow_headers=["*"],
+            max_age=3600,
+        )
 
     if FRONTEND_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
