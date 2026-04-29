@@ -127,6 +127,16 @@ docker run --rm \
 - `RAG_INFO_SYNC_URL`
 - `CORS_ALLOWED_ORIGINS`
 - `LLM_TIMEOUT`
+- `CONVERSATION_STORE_BACKEND`
+- `CONVERSATION_DB_PATH`
+- `CONVERSATION_MYSQL_HOST`
+- `CONVERSATION_MYSQL_PORT`
+- `CONVERSATION_MYSQL_USER`
+- `CONVERSATION_MYSQL_PASSWORD`
+- `CONVERSATION_MYSQL_DATABASE`
+- `CONVERSATION_MYSQL_CHARSET`
+- `CONVERSATION_RECENT_TURNS`
+- `CONVERSATION_SUMMARY_MAX_CHARS`
 - `SERVICE_HOST`
 - `SERVICE_PORT`
 
@@ -134,6 +144,7 @@ docker run --rm \
 
 - `LLM_BASE_URL` 需要指向 OpenAI 兼容接口根路径，例如 `https://api.openai.com/v1`
 - `CORS_ALLOWED_ORIGINS` 为逗号分隔的前端域名白名单，默认允许 `http://localhost:1473`、`https://kmsai-uat.seres.cn` 和 `https://kmsai-prod.seres.cn`；浏览器 `Origin` 不包含结尾 `/`，配置中即使写了结尾 `/` 也会自动规范化
+- 生产环境要把历史会话写入 MySQL 时，设置 `CONVERSATION_STORE_BACKEND=mysql`，并配置 `CONVERSATION_MYSQL_*` 变量；默认 `sqlite` 仅用于本地开发和测试。服务启动时会自动检查 `CONVERSATION_MYSQL_DATABASE`：如果库不存在会自动创建并初始化表；如果库已存在但 schema 不兼容，交互式终端会询问是否修复，非交互环境会失败并提示手工处理
 - 如果没配置 RAGFlow / LLM，页面仍能打开，但对应接口会返回 `503`
 
 ## 主要接口
@@ -201,7 +212,7 @@ curl -N --request POST \
 
 行为：
 
-- 基于 SQLite 持久化 `user_id + conversation_id` 的会话历史
+- 基于配置的会话存储持久化 `user_id + conversation_id` 的会话历史；生产环境推荐 MySQL
 - `user_id` 必填，用于隔离不同用户的历史消息
 - `conversation_id` 可选；不传时自动创建新会话，传入时会继续该会话
 - 服务端会保留最近 `N` 轮原始对话，并把更早的历史压缩进摘要，再与当前问题一起发给 LLM
@@ -246,9 +257,65 @@ curl -N --request POST \
 
 相关环境变量：
 
-- `CONVERSATION_DB_PATH`：SQLite 文件路径，默认 `output/conversations.sqlite3`
+- `CONVERSATION_STORE_BACKEND`：会话存储后端，支持 `mysql` 或 `sqlite`，默认 `sqlite`
+- `CONVERSATION_DB_PATH`：SQLite 文件路径，仅 `CONVERSATION_STORE_BACKEND=sqlite` 时使用，默认 `output/conversations.sqlite3`
+- `CONVERSATION_MYSQL_HOST`：MySQL 主机名，仅 `CONVERSATION_STORE_BACKEND=mysql` 时必填
+- `CONVERSATION_MYSQL_PORT`：MySQL 端口，默认 `3306`
+- `CONVERSATION_MYSQL_USER`：MySQL 用户名，仅 `CONVERSATION_STORE_BACKEND=mysql` 时必填
+- `CONVERSATION_MYSQL_PASSWORD`：MySQL 密码，仅 `CONVERSATION_STORE_BACKEND=mysql` 时必填
+- `CONVERSATION_MYSQL_DATABASE`：MySQL 数据库名，仅 `CONVERSATION_STORE_BACKEND=mysql` 时必填；只允许字母、数字和下划线
+- `CONVERSATION_MYSQL_CHARSET`：MySQL 字符集，默认 `utf8mb4`
 - `CONVERSATION_RECENT_TURNS`：保留的最近原始轮数，默认 `6`
 - `CONVERSATION_SUMMARY_MAX_CHARS`：历史摘要最大字符数，默认 `4000`
+
+MySQL 初始化说明：
+
+- 不需要提前创建 `CONVERSATION_MYSQL_DATABASE` 指向的数据库；服务会在缺库时自动执行 `CREATE DATABASE ... CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+- 如果数据库已经存在，服务会先校验 `conversations` 和 `conversation_messages` 的表、字段、索引、外键是否符合预期
+- 如果 schema 不正确，服务只会在交互式终端中询问是否修复；容器/K8s 等非交互环境会启动失败，避免无确认地改生产 schema
+- MySQL 账号需要具备建库和 schema 维护权限，例如 `CREATE`、`ALTER`、`INDEX`、`REFERENCES`、`SELECT`、`INSERT`、`UPDATE`、`DELETE`
+
+如果启动时报 `REFERENCES command denied`，需要给应用账号补充外键权限：
+
+```sql
+GRANT REFERENCES ON `ragflow_qa`.* TO 'ragflow'@'%';
+FLUSH PRIVILEGES;
+```
+
+完整 MySQL schema：
+
+```sql
+CREATE DATABASE `ragflow_qa`
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+USE `ragflow_qa`;
+
+CREATE TABLE IF NOT EXISTS conversations (
+  conversation_id VARCHAR(64) PRIMARY KEY,
+  user_id VARCHAR(255) NOT NULL,
+  title VARCHAR(120) NOT NULL DEFAULT '',
+  summary TEXT NOT NULL,
+  created_at VARCHAR(64) NOT NULL,
+  updated_at VARCHAR(64) NOT NULL,
+  INDEX idx_conversations_user_id (user_id),
+  INDEX idx_conversations_updated_at (updated_at)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS conversation_messages (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  conversation_id VARCHAR(64) NOT NULL,
+  role VARCHAR(32) NOT NULL,
+  content LONGTEXT NOT NULL,
+  referenced_documents LONGTEXT NOT NULL,
+  created_at VARCHAR(64) NOT NULL,
+  CONSTRAINT fk_conversation_messages_conversation
+    FOREIGN KEY (conversation_id)
+    REFERENCES conversations(conversation_id)
+    ON DELETE CASCADE,
+  INDEX idx_conversation_messages_conversation_id (conversation_id, id)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
 
 ## 历史会话查询接口
 
@@ -260,7 +327,7 @@ curl -N --request POST \
 - 返回会话标题、压缩后的较早历史摘要、当前保留窗口内的原始消息
 - 原始消息会带出保存的 `referenced_documents` 引用来源列表
 - 默认按 `updated_at` 倒序返回，支持分页
-- 该接口只读取本地 SQLite 会话库，不会调用 RAGFlow 或 LLM
+- 该接口只读取配置的会话存储，不会调用 RAGFlow 或 LLM
 
 请求示例：
 
@@ -316,7 +383,7 @@ curl --request GET \
 - 按 `user_id + conversation_id` 删除该用户自己的历史会话
 - 会一并删除该会话的原始消息和历史摘要
 - 如果 `conversation_id` 不存在，或不属于当前 `user_id`，接口返回 `400`
-- 该接口只写入本地 SQLite 会话库，不会调用 RAGFlow 或 LLM
+- 该接口只写入配置的会话存储，不会调用 RAGFlow 或 LLM
 
 请求示例：
 

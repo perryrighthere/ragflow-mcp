@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .conversation_store import ConversationHistoryPage, ConversationStore
+from .conversation_store import ConversationHistoryPage, ConversationStore, ConversationStoreProtocol, MySQLConversationStore
 from .document_service import RagflowDocumentService
 from .exceptions import ConfigError, KnowledgePortalAPIError, LLMAPIError, RagflowAPIError, ValidationError
 from .knowledge_portal_service import KnowledgePortalSyncService
@@ -202,7 +202,7 @@ class ServiceRuntime:
     def get_knowledge_portal_service(self) -> KnowledgePortalSyncService:
         return self._knowledge_portal_service
 
-    def get_conversation_store(self) -> ConversationStore:
+    def get_conversation_store(self) -> ConversationStoreProtocol:
         return self._conversation_store
 
     def _build_client(self, settings: Settings) -> RagflowClient | None:
@@ -232,7 +232,19 @@ class ServiceRuntime:
             return None
         return RagInfoSyncClient(settings.rag_info_sync_url, timeout=settings.request_timeout)
 
-    def _build_conversation_store(self, settings: Settings) -> ConversationStore:
+    def _build_conversation_store(self, settings: Settings) -> ConversationStoreProtocol:
+        if settings.conversation_store_backend == "mysql":
+            mysql_settings = settings.require_conversation_mysql()
+            return MySQLConversationStore(
+                host=mysql_settings.conversation_mysql_host,
+                port=mysql_settings.conversation_mysql_port,
+                user=mysql_settings.conversation_mysql_user,
+                password=mysql_settings.conversation_mysql_password,
+                database=mysql_settings.conversation_mysql_database,
+                charset=mysql_settings.conversation_mysql_charset,
+                recent_turn_window=settings.conversation_recent_turns,
+                summary_max_chars=settings.conversation_summary_max_chars,
+            )
         return ConversationStore(
             settings.conversation_db_path,
             recent_turn_window=settings.conversation_recent_turns,

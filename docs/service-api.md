@@ -558,14 +558,16 @@ curl -N --request POST \
 
 ### 4.3 `POST /api/v1/qa/conversations/answer/stream`
 
-带 SQLite 历史会话能力的流式问答接口。
+带历史会话能力的流式问答接口。生产环境可通过环境变量把会话历史持久化到 MySQL。
 
 #### 行为说明
 
 - `user_id` 必填，用于隔离不同用户的会话。
 - `conversation_id` 选填；不传时自动创建新会话。
 - 若传入的 `conversation_id` 已归属于其他 `user_id`，接口返回 `400`。
-- 历史消息存储在 SQLite 中，默认路径为 `output/conversations.sqlite3`。
+- 历史消息存储在配置的会话后端中；默认 `sqlite` 用于本地开发，生产环境推荐 `mysql`。
+- MySQL 模式下，服务启动时会检查 `CONVERSATION_MYSQL_DATABASE` 是否存在；不存在则自动创建数据库并初始化表。
+- MySQL 数据库已存在时，服务会校验会话表、字段、索引和外键；若 schema 不兼容，交互式终端会询问是否修复，非交互环境会失败并提示手工处理。
 - 服务保留最近若干轮原始消息，并把更早历史压缩为文本摘要。
 - 每条原始历史消息会保存并返回 `referenced_documents` 引用来源列表；无引用时为空数组。
 - 首轮回答结束后，如果会话尚无标题，服务会额外调用一次 LLM 生成 `conversation_title`。
@@ -574,9 +576,18 @@ curl -N --request POST \
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `CONVERSATION_DB_PATH` | `output/conversations.sqlite3` | SQLite 文件路径 |
+| `CONVERSATION_STORE_BACKEND` | `sqlite` | 会话存储后端，支持 `sqlite` 或 `mysql` |
+| `CONVERSATION_DB_PATH` | `output/conversations.sqlite3` | SQLite 文件路径，仅 `CONVERSATION_STORE_BACKEND=sqlite` 时使用 |
+| `CONVERSATION_MYSQL_HOST` | 空 | MySQL 主机名，仅 `CONVERSATION_STORE_BACKEND=mysql` 时必填 |
+| `CONVERSATION_MYSQL_PORT` | `3306` | MySQL 端口 |
+| `CONVERSATION_MYSQL_USER` | 空 | MySQL 用户名，仅 `CONVERSATION_STORE_BACKEND=mysql` 时必填 |
+| `CONVERSATION_MYSQL_PASSWORD` | 空 | MySQL 密码，仅 `CONVERSATION_STORE_BACKEND=mysql` 时必填 |
+| `CONVERSATION_MYSQL_DATABASE` | 空 | MySQL 数据库名，仅 `CONVERSATION_STORE_BACKEND=mysql` 时必填；只允许字母、数字和下划线 |
+| `CONVERSATION_MYSQL_CHARSET` | `utf8mb4` | MySQL 字符集 |
 | `CONVERSATION_RECENT_TURNS` | `6` | 保留的最近原始轮数 |
 | `CONVERSATION_SUMMARY_MAX_CHARS` | `4000` | 历史摘要最大字符数 |
+
+MySQL 账号至少需要具备建库和 schema 维护权限，例如 `CREATE`、`ALTER`、`INDEX`、`REFERENCES`、`SELECT`、`INSERT`、`UPDATE`、`DELETE`。
 
 #### 请求体字段
 
@@ -645,7 +656,7 @@ curl -N --request POST \
 
 ### 4.4 `GET /api/v1/qa/conversations`
 
-按用户查询本地 SQLite 中保存的历史会话列表。
+按用户查询会话存储中保存的历史会话列表。
 
 #### 行为说明
 
@@ -740,7 +751,7 @@ curl --request GET \
 
 ### 4.5 `DELETE /api/v1/qa/conversations/{conversation_id}`
 
-按用户删除本地 SQLite 中保存的一条历史会话。
+按用户删除会话存储中保存的一条历史会话。
 
 #### 行为说明
 
@@ -1017,6 +1028,16 @@ curl --request POST \
 | `LLM_MODEL` | 否 | 空 | LLM 模型名 |
 | `RAGFLOW_TIMEOUT` | 否 | `60` | 上游 RAGFlow 超时 |
 | `LLM_TIMEOUT` | 否 | `60` | LLM 超时 |
+| `CONVERSATION_STORE_BACKEND` | 否 | `sqlite` | 会话存储后端，生产环境建议设为 `mysql` |
+| `CONVERSATION_DB_PATH` | 否 | `output/conversations.sqlite3` | SQLite 会话库路径，仅 `CONVERSATION_STORE_BACKEND=sqlite` 时使用 |
+| `CONVERSATION_MYSQL_HOST` | `mysql` 时是 | 空 | MySQL 主机名 |
+| `CONVERSATION_MYSQL_PORT` | 否 | `3306` | MySQL 端口 |
+| `CONVERSATION_MYSQL_USER` | `mysql` 时是 | 空 | MySQL 用户名 |
+| `CONVERSATION_MYSQL_PASSWORD` | `mysql` 时是 | 空 | MySQL 密码 |
+| `CONVERSATION_MYSQL_DATABASE` | `mysql` 时是 | 空 | MySQL 数据库名，只允许字母、数字和下划线 |
+| `CONVERSATION_MYSQL_CHARSET` | 否 | `utf8mb4` | MySQL 连接字符集 |
+| `CONVERSATION_RECENT_TURNS` | 否 | `6` | 保留的最近原始对话轮数 |
+| `CONVERSATION_SUMMARY_MAX_CHARS` | 否 | `4000` | 历史摘要最大字符数 |
 | `CORS_ALLOWED_ORIGINS` | 否 | `http://localhost:1473,https://kmsai-uat.seres.cn,https://kmsai-prod.seres.cn` | 允许跨域访问本服务的前端域名白名单，逗号分隔；服务会自动去掉结尾 `/` |
 | `SERVICE_HOST` | 否 | `0.0.0.0` | 服务监听地址 |
 | `SERVICE_PORT` | 否 | `8080` | 服务监听端口 |

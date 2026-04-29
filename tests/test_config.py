@@ -68,6 +68,7 @@ class ConfigTests(unittest.TestCase):
             env_path = Path(tmpdir) / ".env"
             db_path = Path(tmpdir) / "conversation-db.sqlite3"
             env_path.write_text(
+                "CONVERSATION_STORE_BACKEND=sqlite\n"
                 f"CONVERSATION_DB_PATH={db_path}\n"
                 "CONVERSATION_RECENT_TURNS=4\n"
                 "CONVERSATION_SUMMARY_MAX_CHARS=1500\n",
@@ -79,8 +80,44 @@ class ConfigTests(unittest.TestCase):
                     settings = Settings.from_env()
 
         self.assertEqual(settings.conversation_db_path, str(db_path))
+        self.assertEqual(settings.conversation_store_backend, "sqlite")
         self.assertEqual(settings.conversation_recent_turns, 4)
         self.assertEqual(settings.conversation_summary_max_chars, 1500)
+
+    def test_from_env_reads_conversation_mysql_settings(self):
+        env_values = {
+            "CONVERSATION_STORE_BACKEND": "mysql",
+            "CONVERSATION_MYSQL_HOST": "mysql.local",
+            "CONVERSATION_MYSQL_PORT": "3307",
+            "CONVERSATION_MYSQL_USER": "qa_user",
+            "CONVERSATION_MYSQL_PASSWORD": "qa-password",
+            "CONVERSATION_MYSQL_DATABASE": "ragflow_qa",
+            "CONVERSATION_MYSQL_CHARSET": "utf8mb4",
+            "CONVERSATION_RECENT_TURNS": "8",
+            "CONVERSATION_SUMMARY_MAX_CHARS": "3000",
+        }
+
+        settings = Settings.from_sources(env_values, prefer_os_env=False)
+
+        self.assertEqual(settings.conversation_store_backend, "mysql")
+        self.assertEqual(settings.conversation_mysql_host, "mysql.local")
+        self.assertEqual(settings.conversation_mysql_port, 3307)
+        self.assertEqual(settings.conversation_mysql_user, "qa_user")
+        self.assertEqual(settings.conversation_mysql_password, "qa-password")
+        self.assertEqual(settings.conversation_mysql_database, "ragflow_qa")
+        self.assertEqual(settings.conversation_mysql_charset, "utf8mb4")
+        self.assertEqual(settings.conversation_recent_turns, 8)
+        self.assertEqual(settings.conversation_summary_max_chars, 3000)
+
+    def test_from_env_rejects_invalid_conversation_backend(self):
+        with self.assertRaises(ConfigError):
+            Settings.from_sources({"CONVERSATION_STORE_BACKEND": "postgres"}, prefer_os_env=False)
+
+    def test_require_conversation_mysql_rejects_missing_required_settings(self):
+        settings = Settings.from_sources({"CONVERSATION_STORE_BACKEND": "mysql"}, prefer_os_env=False)
+
+        with self.assertRaises(ConfigError):
+            settings.require_conversation_mysql()
 
     def test_os_env_overrides_dotenv(self):
         with tempfile.TemporaryDirectory() as tmpdir:

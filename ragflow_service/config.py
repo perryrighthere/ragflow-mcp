@@ -14,6 +14,7 @@ DEFAULT_CORS_ALLOWED_ORIGINS = (
     "https://kmsai-uat.seres.cn",
     "https://kmsai-prod.seres.cn",
 )
+SUPPORTED_CONVERSATION_STORE_BACKENDS = {"sqlite", "mysql"}
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,14 @@ class Settings:
     llm_timeout: float = 60.0
     server_host: str = "0.0.0.0"
     server_port: int = 8080
+    conversation_store_backend: str = "sqlite"
     conversation_db_path: str = DEFAULT_CONVERSATION_DB_PATH
+    conversation_mysql_host: str = ""
+    conversation_mysql_port: int = 3306
+    conversation_mysql_user: str = ""
+    conversation_mysql_password: str = ""
+    conversation_mysql_database: str = ""
+    conversation_mysql_charset: str = "utf8mb4"
     conversation_recent_turns: int = 6
     conversation_summary_max_chars: int = 4000
     rag_info_sync_url: str = DEFAULT_RAG_INFO_SYNC_URL
@@ -49,12 +57,50 @@ class Settings:
         llm_timeout_raw = _get_config_value("LLM_TIMEOUT", file_values, default="60", prefer_os_env=prefer_os_env)
         host = _get_config_value("SERVICE_HOST", file_values, default="0.0.0.0", prefer_os_env=prefer_os_env) or "0.0.0.0"
         port_raw = _get_config_value("SERVICE_PORT", file_values, default="8080", prefer_os_env=prefer_os_env)
+        conversation_store_backend = _get_config_value(
+            "CONVERSATION_STORE_BACKEND",
+            file_values,
+            default="sqlite",
+            prefer_os_env=prefer_os_env,
+        ).lower()
         conversation_db_path = _get_config_value(
             "CONVERSATION_DB_PATH",
             file_values,
             default=DEFAULT_CONVERSATION_DB_PATH,
             prefer_os_env=prefer_os_env,
         )
+        conversation_mysql_host = _get_config_value(
+            "CONVERSATION_MYSQL_HOST",
+            file_values,
+            prefer_os_env=prefer_os_env,
+        )
+        conversation_mysql_port_raw = _get_config_value(
+            "CONVERSATION_MYSQL_PORT",
+            file_values,
+            default="3306",
+            prefer_os_env=prefer_os_env,
+        )
+        conversation_mysql_user = _get_config_value(
+            "CONVERSATION_MYSQL_USER",
+            file_values,
+            prefer_os_env=prefer_os_env,
+        )
+        conversation_mysql_password = _get_config_value(
+            "CONVERSATION_MYSQL_PASSWORD",
+            file_values,
+            prefer_os_env=prefer_os_env,
+        )
+        conversation_mysql_database = _get_config_value(
+            "CONVERSATION_MYSQL_DATABASE",
+            file_values,
+            prefer_os_env=prefer_os_env,
+        )
+        conversation_mysql_charset = _get_config_value(
+            "CONVERSATION_MYSQL_CHARSET",
+            file_values,
+            default="utf8mb4",
+            prefer_os_env=prefer_os_env,
+        ) or "utf8mb4"
         conversation_recent_turns_raw = _get_config_value(
             "CONVERSATION_RECENT_TURNS",
             file_values,
@@ -95,6 +141,14 @@ class Settings:
         except ValueError as exc:
             raise ConfigError("SERVICE_PORT must be an integer") from exc
 
+        if conversation_store_backend not in SUPPORTED_CONVERSATION_STORE_BACKENDS:
+            raise ConfigError("CONVERSATION_STORE_BACKEND must be either sqlite or mysql")
+
+        try:
+            conversation_mysql_port = int(conversation_mysql_port_raw)
+        except ValueError as exc:
+            raise ConfigError("CONVERSATION_MYSQL_PORT must be an integer") from exc
+
         try:
             conversation_recent_turns = int(conversation_recent_turns_raw)
         except ValueError as exc:
@@ -117,7 +171,14 @@ class Settings:
             llm_timeout=llm_timeout,
             server_host=host,
             server_port=port,
+            conversation_store_backend=conversation_store_backend,
             conversation_db_path=conversation_db_path,
+            conversation_mysql_host=conversation_mysql_host,
+            conversation_mysql_port=conversation_mysql_port,
+            conversation_mysql_user=conversation_mysql_user,
+            conversation_mysql_password=conversation_mysql_password,
+            conversation_mysql_database=conversation_mysql_database,
+            conversation_mysql_charset=conversation_mysql_charset,
             conversation_recent_turns=conversation_recent_turns,
             conversation_summary_max_chars=conversation_summary_max_chars,
             rag_info_sync_url=rag_info_sync_url,
@@ -136,12 +197,27 @@ class Settings:
         llm_timeout: float | None = None,
         server_host: str | None = None,
         server_port: int | None = None,
+        conversation_store_backend: str | None = None,
         conversation_db_path: str | None = None,
+        conversation_mysql_host: str | None = None,
+        conversation_mysql_port: int | None = None,
+        conversation_mysql_user: str | None = None,
+        conversation_mysql_password: str | None = None,
+        conversation_mysql_database: str | None = None,
+        conversation_mysql_charset: str | None = None,
         conversation_recent_turns: int | None = None,
         conversation_summary_max_chars: int | None = None,
         rag_info_sync_url: str | None = None,
         cors_allowed_origins: tuple[str, ...] | list[str] | None = None,
     ) -> "Settings":
+        normalized_conversation_store_backend = (
+            conversation_store_backend.lower()
+            if conversation_store_backend is not None
+            else self.conversation_store_backend
+        )
+        if normalized_conversation_store_backend not in SUPPORTED_CONVERSATION_STORE_BACKENDS:
+            raise ConfigError("CONVERSATION_STORE_BACKEND must be either sqlite or mysql")
+
         return replace(
             self,
             ragflow_base_url=(ragflow_base_url or self.ragflow_base_url).rstrip("/"),
@@ -153,7 +229,32 @@ class Settings:
             llm_timeout=llm_timeout if llm_timeout is not None else self.llm_timeout,
             server_host=server_host or self.server_host,
             server_port=server_port if server_port is not None else self.server_port,
+            conversation_store_backend=normalized_conversation_store_backend,
             conversation_db_path=conversation_db_path if conversation_db_path is not None else self.conversation_db_path,
+            conversation_mysql_host=(
+                conversation_mysql_host if conversation_mysql_host is not None else self.conversation_mysql_host
+            ),
+            conversation_mysql_port=(
+                conversation_mysql_port if conversation_mysql_port is not None else self.conversation_mysql_port
+            ),
+            conversation_mysql_user=(
+                conversation_mysql_user if conversation_mysql_user is not None else self.conversation_mysql_user
+            ),
+            conversation_mysql_password=(
+                conversation_mysql_password
+                if conversation_mysql_password is not None
+                else self.conversation_mysql_password
+            ),
+            conversation_mysql_database=(
+                conversation_mysql_database
+                if conversation_mysql_database is not None
+                else self.conversation_mysql_database
+            ),
+            conversation_mysql_charset=(
+                conversation_mysql_charset
+                if conversation_mysql_charset is not None
+                else self.conversation_mysql_charset
+            ),
             conversation_recent_turns=(
                 conversation_recent_turns if conversation_recent_turns is not None else self.conversation_recent_turns
             ),
@@ -191,6 +292,20 @@ class Settings:
 
     def is_llm_configured(self) -> bool:
         return bool(self.llm_base_url and self.llm_api_key and self.llm_model)
+
+    def require_conversation_mysql(self) -> "Settings":
+        missing = []
+        if not self.conversation_mysql_host:
+            missing.append("CONVERSATION_MYSQL_HOST")
+        if not self.conversation_mysql_user:
+            missing.append("CONVERSATION_MYSQL_USER")
+        if not self.conversation_mysql_password:
+            missing.append("CONVERSATION_MYSQL_PASSWORD")
+        if not self.conversation_mysql_database:
+            missing.append("CONVERSATION_MYSQL_DATABASE")
+        if missing:
+            raise ConfigError("Missing required env var(s) for MySQL conversation store: " + ", ".join(missing))
+        return self
 
 
 def _get_config_value(

@@ -14,8 +14,12 @@ class K8sManifestTests(unittest.TestCase):
 
         self.assertIn("RAG_INFO_SYNC_URL=", env_example)
         self.assertIn("CORS_ALLOWED_ORIGINS=", env_example)
+        self.assertIn("CONVERSATION_STORE_BACKEND=", env_example)
+        self.assertIn("CONVERSATION_MYSQL_HOST=", env_example)
         self.assertIn('RAG_INFO_SYNC_URL: "${RAG_INFO_SYNC_URL}"', configmap)
         self.assertIn('CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS}"', configmap)
+        self.assertIn('CONVERSATION_STORE_BACKEND: "${CONVERSATION_STORE_BACKEND}"', configmap)
+        self.assertIn('CONVERSATION_MYSQL_HOST: "${CONVERSATION_MYSQL_HOST}"', configmap)
 
 
 if __name__ == "__main__":
