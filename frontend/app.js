@@ -31,9 +31,11 @@ function createElement(tagName) {
 
 const form = getElementById("qa-form");
 const submitButton = getElementById("submit-button");
+const loadHistoryButton = getElementById("load-history-button");
 const resetPromptsButton = getElementById("reset-prompts-button");
 const statusText = getElementById("status-text");
 const promptStatusText = getElementById("prompt-status-text");
+const historyStatusText = getElementById("history-status-text");
 const metaText = getElementById("meta-text");
 const answerOutput = getElementById("answer-output");
 const requestOutput = getElementById("request-output");
@@ -41,8 +43,11 @@ const responseOutput = getElementById("response-output");
 const llmPromptOutput = getElementById("llm-prompt-output");
 const sourcesOutput = getElementById("sources-output");
 const referencedDocumentsOutput = getElementById("referenced-documents-output");
+const historyOutput = getElementById("history-output");
 const logOutput = getElementById("log-output");
 const datasetIdsInput = getElementById("dataset_ids");
+const userIdInput = getElementById("user_id");
+const conversationIdInput = getElementById("conversation_id");
 const systemPromptInput = getElementById("system_prompt");
 const userPromptTemplateInput = getElementById("user_prompt_template");
 
@@ -80,6 +85,11 @@ function parseOptionalJson(value, label) {
 function setStatus(text, busy) {
   statusText.textContent = text;
   submitButton.disabled = busy;
+}
+
+function setHistoryStatus(text, busy = false) {
+  historyStatusText.textContent = text;
+  loadHistoryButton.disabled = busy;
 }
 
 function appendLog(text, tone = "info") {
@@ -418,13 +428,15 @@ function buildMetaText(data) {
   const model = data?.model || "No model";
   const sourceCount = data?.source_count || 0;
   const documentCount = Array.isArray(data?.referenced_documents) ? data.referenced_documents.length : 0;
+  const conversationTitle = String(data?.conversation_title || "").trim();
+  const conversationSuffix = conversationTitle ? ` · ${conversationTitle}` : "";
   if (sourceCount > 0) {
-    return `${model} · ${documentCount} docs · ${sourceCount} sources`;
+    return `${model} · ${documentCount} docs · ${sourceCount} sources${conversationSuffix}`;
   }
   if (Array.isArray(data?.llm_messages) && data.llm_messages.length > 0) {
-    return `${model} · direct LLM`;
+    return `${model} · direct LLM${conversationSuffix}`;
   }
-  return `${model} · 0 sources`;
+  return `${model} · 0 sources${conversationSuffix}`;
 }
 
 function renderSources(sources) {
@@ -485,6 +497,84 @@ function renderReferencedDocuments(documents) {
     card.appendChild(title);
     card.appendChild(body);
     referencedDocumentsOutput.appendChild(card);
+  });
+}
+
+function renderHistoryMessages(messages) {
+  const list = createElement("div");
+  list.className = "history-messages";
+
+  if (!Array.isArray(messages) || messages.length === 0) {
+    const empty = createElement("p");
+    empty.className = "history-message-empty";
+    empty.textContent = "No retained messages.";
+    list.appendChild(empty);
+    return list;
+  }
+
+  messages.forEach((message) => {
+    const item = createElement("p");
+    item.className = `history-message history-message-${message.role === "assistant" ? "assistant" : "user"}`;
+    const role = message.role === "assistant" ? "Assistant" : "User";
+    item.textContent = `${role}: ${String(message.content || "").trim()}`;
+    list.appendChild(item);
+  });
+
+  return list;
+}
+
+function renderConversationHistory(conversations) {
+  historyOutput.innerHTML = "";
+
+  if (!Array.isArray(conversations) || conversations.length === 0) {
+    const empty = createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "No conversations found for this user.";
+    historyOutput.appendChild(empty);
+    return;
+  }
+
+  conversations.forEach((conversation) => {
+    const card = createElement("article");
+    card.className = "history-card";
+
+    const header = createElement("div");
+    header.className = "history-card-head";
+
+    const titleWrap = createElement("div");
+    const title = createElement("h3");
+    title.textContent = conversation.conversation_title || "Untitled conversation";
+    const meta = createElement("p");
+    meta.textContent = [
+      conversation.conversation_id || "",
+      conversation.updated_at ? `updated ${conversation.updated_at}` : "",
+    ].filter(Boolean).join(" · ");
+    titleWrap.appendChild(title);
+    titleWrap.appendChild(meta);
+
+    const continueButton = createElement("button");
+    continueButton.type = "button";
+    continueButton.className = "secondary-button history-continue-button";
+    continueButton.textContent = "Continue";
+    continueButton.addEventListener("click", () => {
+      conversationIdInput.value = conversation.conversation_id || "";
+      metaText.textContent = conversation.conversation_title || "Conversation selected";
+      appendLog(`Selected conversation ${conversation.conversation_id || ""}.`, "info");
+    });
+
+    header.appendChild(titleWrap);
+    header.appendChild(continueButton);
+    card.appendChild(header);
+
+    if (conversation.history_summary) {
+      const summary = createElement("p");
+      summary.className = "history-summary";
+      summary.textContent = `Summary: ${conversation.history_summary}`;
+      card.appendChild(summary);
+    }
+
+    card.appendChild(renderHistoryMessages(conversation.history_messages));
+    historyOutput.appendChild(card);
   });
 }
 
@@ -560,6 +650,9 @@ function applyAnswerPayload(data) {
   renderReferencedDocuments(data.referenced_documents || []);
   renderLlmMessages(data.llm_messages);
   metaText.textContent = buildMetaText(data);
+  if (data.conversation_id) {
+    conversationIdInput.value = data.conversation_id;
+  }
 }
 
 function appendAnswerDelta(delta) {
@@ -617,6 +710,9 @@ function processStreamLine(line, state) {
     renderReferencedDocuments(event.data?.referenced_documents || []);
     renderLlmMessages(event.data?.llm_messages);
     metaText.textContent = buildMetaText(event.data);
+    if (event.data?.conversation_id) {
+      conversationIdInput.value = event.data.conversation_id;
+    }
     appendLog("Prepared the answer context and started streaming.", "info");
     return;
   }
@@ -640,11 +736,11 @@ function processStreamLine(line, state) {
   }
 }
 
-async function sendStreamingRequest(payload) {
+async function sendStreamingRequest(payload, path) {
   renderJson(requestOutput, payload);
-  appendLog("Sending streaming QA request.");
+  appendLog(`Sending streaming QA request to ${path}.`);
 
-  const response = await fetch("/api/v1/qa/answer/stream", {
+  const response = await fetch(path, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -707,6 +803,43 @@ async function sendStreamingRequest(payload) {
   return { code: 0, data: state.finalData };
 }
 
+async function loadConversationHistory() {
+  const userId = String(userIdInput.value || "").trim();
+  if (!userId) {
+    setHistoryStatus("Enter a user ID before loading history.");
+    appendLog("User ID is required to load conversation history.", "error");
+    return;
+  }
+
+  setHistoryStatus("Loading conversation history...", true);
+  try {
+    const query = new URLSearchParams({
+      user_id: userId,
+      page: "1",
+      page_size: "20",
+    });
+    const response = await fetch(`/api/v1/qa/conversations?${query.toString()}`);
+    const rawText = await response.text();
+    const payload = rawText ? JSON.parse(rawText) : {};
+
+    if (!response.ok) {
+      throw new Error(payload.detail || `History request failed with status ${response.status}.`);
+    }
+
+    const conversations = payload.data?.conversations || [];
+    renderConversationHistory(conversations);
+    setHistoryStatus(`${payload.data?.total || 0} conversations loaded for ${payload.data?.user_id || userId}.`);
+    appendLog("Loaded conversation history.", "success");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to load conversation history.";
+    renderConversationHistory([]);
+    setHistoryStatus("Conversation history load failed.");
+    appendLog(message, "error");
+  } finally {
+    loadHistoryButton.disabled = false;
+  }
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
@@ -715,6 +848,8 @@ form.addEventListener("submit", async (event) => {
     question: String(formData.get("question") || "").trim(),
   };
 
+  const userId = String(formData.get("user_id") || "").trim();
+  const conversationId = String(formData.get("conversation_id") || "").trim();
   const datasetIds = parseCsv(String(formData.get("dataset_ids") || ""));
   const documentIds = parseCsv(String(formData.get("document_ids") || ""));
   const pageSize = parseOptionalNumber(String(formData.get("page_size") || ""));
@@ -738,6 +873,12 @@ form.addEventListener("submit", async (event) => {
       "Metadata condition"
     );
 
+    if (userId) {
+      payload.user_id = userId;
+    }
+    if (userId && conversationId) {
+      payload.conversation_id = conversationId;
+    }
     if (datasetIds.length > 0) {
       payload.dataset_ids = datasetIds;
     }
@@ -784,10 +925,14 @@ form.addEventListener("submit", async (event) => {
   resetAnswerPanels();
 
   try {
-    const response = await sendStreamingRequest(payload);
+    const endpoint = userId ? "/api/v1/qa/conversations/answer/stream" : "/api/v1/qa/answer/stream";
+    const response = await sendStreamingRequest(payload, endpoint);
     const data = response.data || {};
     applyAnswerPayload(data);
     appendLog("Received streamed QA response.", "success");
+    if (userId) {
+      await loadConversationHistory();
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error.";
     if (!(error instanceof Error && error.keepCurrentOutput)) {
@@ -801,6 +946,10 @@ form.addEventListener("submit", async (event) => {
   } finally {
     setStatus("Ready", false);
   }
+});
+
+loadHistoryButton.addEventListener("click", () => {
+  loadConversationHistory();
 });
 
 resetPromptsButton.addEventListener("click", () => {

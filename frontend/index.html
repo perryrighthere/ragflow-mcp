@@ -26,6 +26,18 @@
             ></textarea>
           </label>
 
+          <div class="field-grid conversation-fields">
+            <label class="field">
+              <span>User ID</span>
+              <input id="user_id" name="user_id" placeholder="user_001" />
+              <small class="field-note">填写后会使用带历史会话接口，并可查询该用户历史。</small>
+            </label>
+            <label class="field">
+              <span>Conversation ID</span>
+              <input id="conversation_id" name="conversation_id" placeholder="留空则自动创建新会话" />
+            </label>
+          </div>
+
           <div class="field-grid">
             <label class="field">
               <span>Dataset IDs</span>
@@ -38,7 +50,7 @@
             </label>
           </div>
 
-          <div class="field-grid">
+          <div class="field-grid metric-fields">
             <label class="field">
               <span>Page Size</span>
               <input id="page_size" name="page_size" type="number" min="1" max="20" value="6" />
@@ -69,7 +81,7 @@
             </label>
           </div>
 
-          <div class="field-grid">
+          <div class="field-grid metric-fields">
             <label class="field">
               <span>Rerank ID</span>
               <input id="rerank_id" name="rerank_id" placeholder="rerank-model-id" />
@@ -137,6 +149,7 @@
 
           <div class="actions">
             <button id="submit-button" type="submit">Ask Assistant</button>
+            <button id="load-history-button" type="button" class="secondary-button">Load History</button>
             <p id="status-text" class="status">Ready</p>
           </div>
         </form>
@@ -151,6 +164,16 @@
       </section>
 
       <section class="details-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Conversation History</h2>
+            <p id="history-status-text">Enter a user ID to load saved conversations.</p>
+          </div>
+          <div id="history-output" class="history-output">
+            <p class="empty-state">No conversation history loaded.</p>
+          </div>
+        </section>
+
         <section class="panel">
           <div class="panel-head">
             <h2>Sources</h2>
@@ -174,7 +197,7 @@
         <section class="panel">
           <div class="panel-head">
             <h2>Request Preview</h2>
-            <p>Payload sent to <code>/api/v1/qa/answer/stream</code>.</p>
+            <p>Payload sent to the selected QA route.</p>
           </div>
           <pre id="request-output" class="code-output">{}</pre>
         </section>

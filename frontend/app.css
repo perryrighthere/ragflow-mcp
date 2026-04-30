@@ -134,6 +134,9 @@ pre {
 
 .field-grid + .field-grid {
   margin-top: 10px;
+}
+
+.metric-fields {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
@@ -188,9 +191,13 @@ textarea:focus {
 .actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  justify-content: flex-start;
+  gap: 10px;
   margin-top: 14px;
+}
+
+.actions .status {
+  margin-left: auto;
 }
 
 button {
@@ -378,6 +385,14 @@ button:disabled {
   padding-right: 4px;
 }
 
+.history-output {
+  display: grid;
+  gap: 10px;
+  height: 280px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
 .source-card {
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -393,6 +408,68 @@ button:disabled {
 .source-card pre {
   max-height: 168px;
   overflow: auto;
+}
+
+.history-card {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.history-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.history-card h3 {
+  margin: 0 0 6px;
+  font-size: 0.96rem;
+}
+
+.history-card p {
+  margin: 0;
+}
+
+.history-card-head p,
+.history-summary,
+.history-message-empty {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.history-continue-button {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  font-size: 0.82rem;
+}
+
+.history-summary {
+  margin-top: 10px;
+}
+
+.history-messages {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.history-message {
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 250, 243, 0.7);
+  color: var(--ink);
+  font-size: 0.86rem;
+  line-height: 1.45;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.history-message-assistant {
+  background: rgba(168, 75, 42, 0.08);
 }
 
 .log-output {
@@ -506,7 +583,7 @@ button:disabled {
   .workspace,
   .details-grid,
   .field-grid,
-  .field-grid + .field-grid,
+  .metric-fields,
   .prompt-grid {
     grid-template-columns: 1fr;
   }
@@ -526,6 +603,7 @@ button:disabled {
 
   .code-output,
   .sources-output,
+  .history-output,
   .log-output,
   .prompt-grid textarea {
     height: 240px;
